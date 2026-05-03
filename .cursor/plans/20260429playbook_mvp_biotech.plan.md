@@ -4,13 +4,13 @@ overview: Playbook executável para entregas semanais do assistente biotech em M
 todos:
   - id: fechar-escopo-mvp
     content: Congelar escopo e stack final do MVP (Docker, Streamlit, txtai, DuckDB, LM Studio)
-    status: pending
+    status: completed
   - id: fundacao-docker-streamlit
     content: Entregar base Docker Compose + Streamlit + volumes + autenticação web + banco de metadados/auditoria inicial
-    status: pending
+    status: in_progress
   - id: pipeline-ingestao
     content: Implementar ingestão, parsing e versionamento por hash
-    status: pending
+    status: in_progress
   - id: rag-chat-citacoes
     content: Pipeline txtai (embeddings + índice + RAG) e chat na UI com citações via LM Studio
     status: pending
@@ -21,6 +21,20 @@ isProject: false
 ---
 
 # Playbook Executável do MVP Biotech
+
+## Progresso registrado (rastreio)
+
+Registro factual do que já existe no repositório **sem alterar** a arquitetura-alvo (Docker + Streamlit + txtai + DuckDB + LM Studio no host). Atualizar este bloco a cada marco entregue.
+
+| Marco | Estado | Evidência no código / artefatos |
+|--------|--------|----------------------------------|
+| Runtime Docker + Compose | Entregue | `docker-compose.yml`, `docker/streamlit/Dockerfile`, volumes `/data/projetos` (bind RO), `/data/txtai`, `/data/duckdb`, `/data/sqlite`, `extra_hosts` para `host.docker.internal`, `restart: unless-stopped`, `PYTHONUNBUFFERED` |
+| HEALTHCHECK da imagem | Entregue | `Dockerfile`: GET HTTP `/_stcore/health` na porta do Streamlit (8502) |
+| UI Streamlit (abas) | Entregue | `apps/streamlit/app.py`: Início, Fontes e inventário, Indexação RAG (placeholder), Chat (placeholder), OLAP (placeholder), Diagnóstico (runtime + teste GET `/v1/models`) |
+| Inventário segmentado por projeto | Entregue | `apps/streamlit/projects_loader.py`: um subdiretório de primeiro nível = um `project_id`; varredura recursiva; hash SHA-256 opcional; tolerância a `OSError` em stat/hash/walk |
+| Parsing docx/xlsx, txtai, DuckDB na UI, auth web | Pendente | Conforme Fases 1–4 abaixo |
+
+**Porta do Streamlit (MVP atual):** `8502` (host e contêiner), configurável por `STREAMLIT_PORT` no `.env` do Compose.
 
 ## Objetivo
 Construir uma **aplicação web** (não desktop), **containerizada em Docker**, para análise documental (`docx`, `xlsx`, `xlsm`) com **RAG local**, **OLAP** e chat com citações, iniciando simples e evoluindo com segurança. O mesmo produto segue **orientado a dados e modelo locais** (pastas montadas em volume, LM Studio no host); a UI e o pipeline rodam no contêiner.
@@ -81,7 +95,7 @@ flowchart LR
 ## Fase 1 - Fundação (Semana 1-2)
 - Subir estrutura de projeto e **runtime containerizado**.
 - Entregáveis:
-  - **`docker-compose.yml`** + **`Dockerfile`** (imagem enxuta quando possível; usuário não-root; porta Streamlit exposta, ex. `8501`)
+  - **`docker-compose.yml`** + **`Dockerfile`** (imagem enxuta quando possível; usuário não-root; porta Streamlit exposta — no repositório atual: **8502**, via `STREAMLIT_PORT`)
   - app **Streamlit** inicial: layout base, página de **diagnóstico** (versão, paths de volume, teste de conectividade ao LM Studio com timeouts e mensagem clara se indisponível)
   - fluxo mínimo **Streamlit → cliente OpenAI** → LM Studio (`LLM_BASE_URL`, streaming se suportado)
   - **DuckDB** “olá mundo”: conexão a arquivo em volume + uma consulta/agregação de exemplo na UI

@@ -1,33 +1,117 @@
 # Assistente de lab
 
-MVP offline-first para análise documental com RAG local (ver playbook em `.cursor/plans/` e blueprint em `Histórico/`).
+Aplicação web **MVP offline-first** para apoiar P&D com documentos locais, **RAG** (planejado: txtai), **OLAP** (planejado: DuckDB) e geração via **LM Studio** no host. A UI e o pipeline Python rodam **no Docker**; dados sensíveis e modelo ficam na sua máquina.
 
-## LM Studio (IA local)
+| Documento | Função |
+|-----------|--------|
+| [`.cursor/plans/20260429playbook_mvp_biotech.plan.md`](.cursor/plans/20260429playbook_mvp_biotech.plan.md) | Playbook: fases, escopo, riscos e **tabela de progresso** atualizada |
+| [`env.docker.example`](env.docker.example) | Modelo de variáveis para `docker compose` (copiar para `.env`) |
 
-O modelo de linguagem roda no [LM Studio](https://lmstudio.ai/), que expõe uma API compatível com OpenAI no seu PC.
+---
 
-1. Instale o LM Studio e baixe um modelo de chat no catálogo do aplicativo.
-2. Abra a aba do **servidor local** e clique para **iniciar o servidor**. Anote a **porta** (padrão comum: `1234`) e o **nome do modelo** exibido na interface — esse nome é o valor de `LLM_MODEL`.
-3. Copie `apps/api/.env.example` para `apps/api/.env` e ajuste `LLM_BASE_URL` (se mudou a porta) e `LLM_MODEL` (nome exato do modelo).
-4. `LLM_API_KEY` pode ficar como no exemplo; o LM Studio em geral não valida a chave, mas o cliente HTTP precisa de algum valor.
+## Visão rápida do repositório
 
-Fluxo recomendado: **interface ou app desktop → API FastAPI → LM Studio**. Evita chamar o LM Studio direto do navegador (CORS e segurança).
+```
+Assistente_de_lab/
+├── docker-compose.yml          # Orquestração: Streamlit + volumes + rede ao host
+├── docker/streamlit/Dockerfile # Imagem da app (usuário não-root, HEALTHCHECK HTTP)
+├── env.docker.example          # Exemplo de .env na raiz
+├── apps/streamlit/
+│   ├── app.py                  # UI: abas (Início, Fontes, RAG, Chat, OLAP, Diagnóstico)
+│   ├── projects_loader.py      # Inventário: um subdir. de 1º nível = projeto; walk recursivo
+│   └── requirements.txt
+└── apps/api/                   # FastAPI opcional (fora do caminho crítico do MVP)
+```
 
-## API FastAPI (`apps/api`)
+**Convenção de projeto:** dentro da pasta configurada como raiz (ex.: `Projetos`), cada **subdiretório imediato** é um **projeto** (`project_id` = nome da pasta). Pastas como `planning/` ou `results/` pertencem ao mesmo projeto.
+
+---
+
+## Executar com Docker (recomendado)
+
+**Pré-requisitos:** [Docker Desktop](https://www.docker.com/products/docker-desktop/) (Windows/macOS) ou Docker Engine + Compose v2 (Linux). Para testar LLM a partir do contêiner: [LM Studio](https://lmstudio.ai/) com servidor local ativo no host.
+
+1. Na **raiz** do repositório, copie [`env.docker.example`](env.docker.example) para **`.env`** e edite pelo menos `PROJETOS_HOST_DIR` (caminho absoluto no **host** da pasta que contém um subdiretório por projeto).
+
+2. Suba o stack:
+
+   ```bash
+   docker compose up --build
+   ```
+
+3. Abra no navegador: **`http://127.0.0.1:8502`** (ou `http://127.0.0.1:${STREAMLIT_PORT}` se alterou o `.env`).
+
+O serviço usa `restart: unless-stopped` e `PYTHONUNBUFFERED=1` para logs mais imediatos.
+
+### Variáveis de ambiente (Compose / `.env`)
+
+| Variável | Onde | Descrição |
+|----------|------|-----------|
+| `PROJETOS_HOST_DIR` | Host | Pasta montada em `/data/projetos` no contêiner (somente leitura). |
+| `STREAMLIT_PORT` | Host | Porta publicada (padrão **8502**). Deve coincidir com a porta interna mapeada `HOST:8502→8502`. |
+| `ASSISTENTE_PROJETOS_DIR` | Contêiner | Definido no Compose como `/data/projetos` (não precisa mudar no uso normal). |
+| `LLM_BASE_URL` | Contêiner | Base OpenAI-compatível (ex.: `http://host.docker.internal:1234/v1`). |
+| `LLM_MODEL` | Contêiner | ID exato do modelo no LM Studio. |
+| `OPENAI_API_KEY` | Contêiner | Valor dummy aceito pelo LM Studio na maioria dos setups. |
+
+### Volumes dentro do contêiner
+
+| Caminho | Uso |
+|---------|-----|
+| `/data/projetos` | Bind do host: documentos dos projetos (**RO**). |
+| `/data/txtai` | Volume nomeado: índice/embeddings (fases futuras). |
+| `/data/duckdb` | Volume nomeado: OLAP. |
+| `/data/sqlite` | Volume nomeado: metadados/auditoria (fases futuras). |
+
+### Saúde do contêiner (HEALTHCHECK)
+
+A imagem define verificação HTTP em **`http://127.0.0.1:8502/_stcore/health`** (endpoint interno do Streamlit). Para inspecionar no host:
 
 ```bash
-cd apps/api
+docker inspect --format='{{json .State.Health}}' assistente-lab-streamlit
+```
+
+Se o status ficar `unhealthy`, confira se o processo Streamlit subiu (logs: `docker compose logs streamlit`) e se a versão do Streamlit expõe `/_stcore/health` (Streamlit recente).
+
+### Problemas comuns
+
+- **Pasta vazia ou “Caminho não existe”:** `PROJETOS_HOST_DIR` no `.env` incorreto ou drive não montado no Linux (use caminho absoluto real).
+- **LM Studio inalcançável no Diagnóstico:** servidor local desligado, firewall, ou URL errada. No Docker Desktop (Windows/macOS) use `host.docker.internal`; no Linux o Compose já inclui `extra_hosts: host.docker.internal:host-gateway`.
+- **Permissão negada em arquivos:** o bind é **somente leitura**; o usuário da imagem (`uid 10001`) precisa de permissão de leitura no host (no Windows com Docker Desktop costuma funcionar sem ajuste extra).
+- **Inventário vazio:** nenhum subdiretório na raiz, ou extensões na barra lateral não batem com os arquivos (veja filtro de extensões na UI).
+
+---
+
+## Desenvolvimento local (sem Docker)
+
+Útil para depurar `app.py` e `projects_loader.py`:
+
+```powershell
+cd apps/streamlit
 python -m venv .venv
 .\.venv\Scripts\activate
 pip install -r requirements.txt
-copy .env.example .env
-# Edite .env: defina LLM_MODEL com o id do modelo no LM Studio
-uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+# Opcional: $env:ASSISTENTE_PROJETOS_DIR="D:\caminho\Projetos"
+streamlit run app.py --server.port 8502
 ```
 
-- `GET /health` — API no ar.
-- `GET /health/llm` — tenta falar com o LM Studio (use para saber se o servidor local está ligado).
-- `POST /chat` — corpo JSON: `{"messages":[{"role":"user","content":"Olá"}]}` — resposta: `{"message":"..."}`.
-- `POST /chat/stream` — mesmo corpo, resposta em SSE (`text/event-stream`).
+Fora do Docker, se `ASSISTENTE_PROJETOS_DIR` não estiver definida e não houver `/.dockerenv`, o loader usa um **fallback Windows** em `projects_loader.py` (ajuste por env em outros SO).
 
-Documentação interativa: `http://127.0.0.1:8000/docs` (com o servidor uvicorn rodando).
+---
+
+## Rastreio código ↔ produto
+
+| Necessidade | Começar em |
+|-------------|------------|
+| UI, diagnóstico LLM, abas | `apps/streamlit/app.py` |
+| Regra “um projeto por pasta”, scan, hash opcional | `apps/streamlit/projects_loader.py` |
+| Imagem e healthcheck | `docker/streamlit/Dockerfile` |
+| Portas, volumes, env injetada | `docker-compose.yml` |
+
+Próximas entregas planejadas estão descritas por fase no **playbook** (parsing, txtai, DuckDB na UI, autenticação, etc.).
+
+---
+
+## API FastAPI (`apps/api`, opcional)
+
+Serviço HTTP separado para testes ou integrações; **não** substitui o MVP principal (Streamlit no Docker). Ver `apps/api/README.md` e `apps/api/.env.example`.
