@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Blueprint - Aplicação Biotech (MVP)</title>
+  <style>
+    :root {
+      --bg: #f8fafc;
+      --card: #ffffff;
+      --text: #0f172a;
+      --muted: #475569;
+      --border: #e2e8f0;
+      --accent: #2563eb;
+      --ok: #16a34a;
+    }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.55;
+    }
+    .container {
+      max-width: 1040px;
+      margin: 24px auto;
+      padding: 0 16px 32px;
+    }
+    .hero {
+      background: linear-gradient(135deg, #dbeafe, #eff6ff);
+      border: 1px solid #bfdbfe;
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 16px;
+    }
+    .hero h1 {
+      margin: 0 0 8px 0;
+      font-size: 28px;
+    }
+    .hero p {
+      margin: 4px 0;
+      color: #1e3a8a;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 12px;
+    }
+    h2 {
+      margin: 0 0 8px 0;
+      font-size: 20px;
+      color: #1d4ed8;
+    }
+    h3 {
+      margin: 10px 0 6px;
+      font-size: 16px;
+      color: #0f172a;
+    }
+    p {
+      margin: 6px 0;
+      color: var(--text);
+    }
+    .muted {
+      color: var(--muted);
+    }
+    ul {
+      margin: 6px 0 6px 20px;
+      padding: 0;
+    }
+    li {
+      margin: 4px 0;
+    }
+    .chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 8px;
+    }
+    .chip {
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 6px 10px;
+      background: #f8fafc;
+      font-size: 13px;
+    }
+    .ok {
+      color: var(--ok);
+      font-weight: 600;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 10px;
+    }
+    .mono {
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 13px;
+      background: #f1f5f9;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <section class="hero">
+      <h1>Blueprint - Ecossistema de Agentes para P&amp;D Biotech</h1>
+      <p><strong>Objetivo:</strong> começar simples (MVP), com base segura e escalável.</p>
+      <p><strong>Contexto:</strong> dados confidenciais, IA local, documentos <code>.docx</code>, <code>.xlsx</code>, <code>.xlsm</code>.</p>
+    </section>
+
+    <section class="card">
+      <h2>1) Escopo do MVP</h2>
+      <ul>
+        <li>Ingestão de arquivos por pasta local.</li>
+        <li>Extração de conteúdo e metadados.</li>
+        <li>Indexação vetorial para RAG com embedding local.</li>
+        <li>Chat com resposta baseada em evidência e citação de fonte.</li>
+        <li>Login local simples e trilha de auditoria básica.</li>
+      </ul>
+      <p class="muted"><strong>Fase 2:</strong> SQL em linguagem natural, NER/NEN avançado e multiagentes especializados.</p>
+    </section>
+
+    <section class="card">
+      <h2>2) Stack Recomendada</h2>
+      <div class="chips">
+        <span class="chip">Desktop: Tauri + React + TypeScript + Vite</span>
+        <span class="chip">Backend local: Python + FastAPI</span>
+        <span class="chip">LLM local: LM Studio (API OpenAI-compatible)</span>
+        <span class="chip">Embeddings: SentenceTransformers (bge-m3/e5-large); opcional /v1/embeddings no LM Studio</span>
+        <span class="chip">Vetorial: Qdrant local</span>
+        <span class="chip">Relacional: PostgreSQL (ou SQLite no início)</span>
+        <span class="chip">Parsing: python-docx + openpyxl + pandas</span>
+        <span class="chip">Orquestração: LangGraph (ou LlamaIndex)</span>
+      </div>
+      <p class="muted" style="margin-top:10px"><strong>Embeddings no MVP:</strong> opção B (recomendada para começar): vetores com SentenceTransformers no backend e LM Studio só para o LLM de resposta. Opção A: modelo de embeddings também no LM Studio via <code>/v1/embeddings</code>.</p>
+    </section>
+
+    <section class="card">
+      <h2>3) Arquitetura em Camadas</h2>
+      <div class="grid">
+        <div>
+          <h3>Ingestão</h3>
+          <p>Varre diretórios, detecta novos/alterados e calcula hash.</p>
+        </div>
+        <div>
+          <h3>Processamento</h3>
+          <p>Extrai texto/tabelas, normaliza conteúdo, prepara chunks.</p>
+        </div>
+        <div>
+          <h3>Indexação</h3>
+          <p>Gera embeddings locais e faz upsert no banco vetorial.</p>
+        </div>
+        <div>
+          <h3>Recuperação (RAG)</h3>
+          <p>Busca chunks relevantes por semântica + filtros por metadados.</p>
+        </div>
+        <div>
+          <h3>Agente</h3>
+          <p>Monta contexto e responde com base em evidências do acervo.</p>
+        </div>
+        <div>
+          <h3>UI Desktop</h3>
+          <p>Chat, ingestão, histórico, configurações e auditoria.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>4) Fluxo de Dados</h2>
+      <ol>
+        <li>Usuário registra pasta local.</li>
+        <li>Serviço detecta arquivos novos/alterados.</li>
+        <li>Parser extrai conteúdo e metadados.</li>
+        <li>Chunking e enriquecimento (opcional NER).</li>
+        <li>Embeddings gerados localmente.</li>
+        <li>Upsert no Qdrant + metadados no banco relacional.</li>
+        <li>Pergunta do chat aciona recuperação top-k.</li>
+        <li>LLM responde com citações de trechos-fonte.</li>
+      </ol>
+    </section>
+
+    <section class="card">
+      <h2>5) Segurança desde o Início</h2>
+      <ul>
+        <li><span class="ok">Offline-first:</span> sem tráfego externo por padrão.</li>
+        <li>Criptografia em repouso para bancos/índices locais.</li>
+        <li>Gestão de segredo no cofre do sistema operacional.</li>
+        <li>RBAC simples (admin, pesquisador, revisor).</li>
+        <li>Auditoria de acesso e de consultas realizadas.</li>
+        <li>Guardrails: bloquear instruções maliciosas e exigir fonte na resposta.</li>
+      </ul>
+    </section>
+
+    <section class="card">
+      <h2>6) Estrutura de Projeto (Monorepo)</h2>
+      <div class="mono">biotech-assistant/
+  apps/
+    desktop/      # Tauri + React
+    api/          # FastAPI
+  services/
+    ingestion/
+    indexing/
+    rag/
+    security/
+  packages/
+    shared-types/
+    prompts/
+  infra/
+    docker/
+    migrations/
+  docs/
+    architecture/
+    decisions/</div>
+    </section>
+
+    <section class="card">
+      <h2>7) Roadmap (8 Semanas)</h2>
+      <h3>Sprint 1-2: Fundação</h3>
+      <ul>
+        <li>Monorepo, autenticação básica, banco relacional, logging.</li>
+      </ul>
+      <h3>Sprint 3-4: Ingestão</h3>
+      <ul>
+        <li>Scanner + parser + versionamento por hash.</li>
+      </ul>
+      <h3>Sprint 5-6: RAG Local</h3>
+      <ul>
+        <li>Embedding local, Qdrant, chat com citações.</li>
+      </ul>
+      <h3>Sprint 7-8: Segurança e Estabilização</h3>
+      <ul>
+        <li>Auditoria, RBAC, guardrails, testes integrados e empacotamento desktop.</li>
+      </ul>
+    </section>
+
+    <section class="card">
+      <h2>8) Critérios de Pronto (DoD)</h2>
+      <ul>
+        <li>Resposta do chat sempre com referência de fonte.</li>
+        <li>Reindexação incremental funcional (somente arquivo alterado).</li>
+        <li>Sem envio de dado para internet no modo offline.</li>
+        <li>Trilha de auditoria por usuário e período.</li>
+        <li>Testes de integração para ingestão + consulta aprovados.</li>
+      </ul>
+    </section>
+  </div>
+</body>
+</html>
