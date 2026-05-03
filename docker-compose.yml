@@ -1,0 +1,35 @@
+# MVP: aplicação Streamlit roda só dentro deste contêiner.
+# Dados locais (Projetos) entram por volume; LM Studio continua no host.
+
+services:
+  streamlit:
+    build:
+      context: .
+      dockerfile: docker/streamlit/Dockerfile
+    container_name: assistente-lab-streamlit
+    restart: unless-stopped
+    ports:
+      - "${STREAMLIT_PORT:-8502}:8502"
+    environment:
+      PYTHONUNBUFFERED: "1"
+      ASSISTENTE_PROJETOS_DIR: /data/projetos
+      LLM_BASE_URL: ${LLM_BASE_URL:-http://host.docker.internal:1234/v1}
+      LLM_MODEL: ${LLM_MODEL:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-lm-studio}
+    volumes:
+      # Pasta do host com um subdiretório por projeto de P&D (somente leitura)
+      - type: bind
+        source: ${PROJETOS_HOST_DIR:-D:/Vanessa/AI_project/Projetos}
+        target: /data/projetos
+        read_only: true
+      - assistente_txtai:/data/txtai
+      - assistente_duckdb:/data/duckdb
+      - assistente_sqlite:/data/sqlite
+    extra_hosts:
+      # Garante host.docker.internal no Linux (Docker 20.10+); no Docker Desktop Win/Mac já existe.
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  assistente_txtai:
+  assistente_duckdb:
+  assistente_sqlite:
