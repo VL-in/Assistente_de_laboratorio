@@ -18,6 +18,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
+from openai import OpenAI
 
 from projects_loader import (
     DEFAULT_DOCUMENT_EXTENSIONS,
@@ -31,6 +32,37 @@ from projects_loader import (
 )
 
 load_dotenv()
+
+# Mensagem de sistema padrão até o RAG injetar contexto de documentos.
+CHAT_SYSTEM_PROMPT = (
+    """<role>
+Você é um assistente de laboratório experiente que atua em pesquisa e desenvolvimento de imunodiagnósticos, principalmente ELISA. Você passou muitos anos trabalhando com dados laboratoriais, planejamento de ensaios, interpretação de resultados. Já viu inúmeros erros por desatenção e sabe que documentação e rastreabilidade de informação é crucial em projetos de desenvolvimento. Você entende que existem múltiplos documentos de experimentos que representam linhas de raciocínio contínua, tratando, por tanto, os documentos não só isoladamente, mas uma sequência.
+</role>
+
+<context>
+Estamos trabalhando em um laboratório de p&D que está com projeto de ELISA ativa. Os pesquisadores planejam e documentam por meio de arquivos docx dados como materiais e insumos, lotes e validades. Os documentos possuem padrões, e os insumos se apresentam na ordem de "nome"/"Fabricante ou código"/ "Lote" ou "Ativo" do equipamento/"Validade". Os pesquisadores vão vir até você para fazer perguntas sobre o que foi feito ou usado nos experimentos passados. O seu trabalho é identificar o que o usuário está buscando e, através dos resultados, apresentar as informações relevantes. Perceba que a mesma informação pode aparecer em diferentes documentos, que podem compor a resposta retornada.
+</context>
+
+<constraints>
+- Nunca invente dados, busque por retrieval as respostas quando a pergunta é voltada para os ensaios.
+- Analise todos os chunks e entenda que a resposta pode ser composta por dados de diferentes documentos.
+- Não altere nenhum dado dos documentos.
+- Retorne as informações junto ao título do documento e a sua data de planejamento.
+- Ao final de cada resposta, seja cordial e pergunte se pode ajudar com mais alguma dúvida.
+- Faça sempre uma pergunta de cada vez.
+- Caso não tenha encontrado respostas nos documentos, expresse isso educadamente.
+</constraints>
+
+<goals>
+- Identifique o objetivo do usuário.
+- Se o usuário perguntar sobre nome de insumo, fabricante, lote ou validade, lembre que os dados estão sempre descritos nessa ordem.
+- Sintetizar uma resposta objetiva que contenha o dado referente às perguntas feitas, sempre referenciando o documento.
+</goals>
+
+<invocation>
+Sempre use a mesma língua do usuário. Por padrão, utilize português brasileiro. Seja cordial, profissional, objetivo e educado.
+</invocation>"""
+)
 
 st.set_page_config(
     page_title="Assistente Lab — Agente documental",
@@ -52,9 +84,45 @@ def _parse_extensions(ext_input: str) -> frozenset[str]:
     return exts if exts else DEFAULT_DOCUMENT_EXTENSIONS
 
 
+def _normalize_openai_base_url(url: str) -> str:
+    """Garante sufixo /v1 exigido pelo SDK OpenAI + LM Studio."""
+    u = url.strip().rstrip("/")
+    if not u:
+        return u
+    if not u.endswith("/v1"):
+        u = f"{u}/v1"
+    return u
+
+
+def _llm_runtime_config() -> tuple[str, str, str]:
+    """(base_url com /v1, model_id, api_key)."""
+    raw_base = os.environ.get("LLM_BASE_URL", "").strip()
+    base = _normalize_openai_base_url(raw_base)
+    model = os.environ.get("LLM_MODEL", "").strip()
+    key = (
+        os.environ.get("OPENAI_API_KEY", "").strip()
+        or os.environ.get("LLM_API_KEY", "").strip()
+        or "lm-studio"
+    )
+    return base, model, key
+
+
+def _is_timeout_error(exc: BaseException) -> bool:
+    """Detecta timeout vindo de urlopen (URLError.reason, encadeamento ou exceção direta)."""
+    if isinstance(exc, TimeoutError):
+        return True
+    reason = getattr(exc, "reason", None)
+    if isinstance(reason, BaseException) and _is_timeout_error(reason):
+        return True
+    cause = getattr(exc, "__cause__", None)
+    if isinstance(cause, BaseException) and _is_timeout_error(cause):
+        return True
+    return False
+
+
 def _check_openai_compatible_models(base_url: str, *, timeout_s: float = 5.0) -> tuple[bool, str]:
-    """GET {base}/models — compatível com LM Studio no host."""
-    b = base_url.strip().rstrip("/")
+    """GET {base}/v1/models — compatível com LM Studio no host."""
+    b = _normalize_openai_base_url(base_url.strip())
     if not b:
         return False, "URL base vazia."
     url = f"{b}/models"
@@ -78,10 +146,14 @@ def _check_openai_compatible_models(base_url: str, *, timeout_s: float = 5.0) ->
     except urllib.error.HTTPError as e:
         return False, f"HTTP {e.code}: {e.reason}"
     except urllib.error.URLError as e:
+        if _is_timeout_error(e):
+            return False, f"Tempo esgotado ({timeout_s}s), favor atualize a página e tente novamente."
         return False, f"Rede/URL: {e.reason!r}"
     except TimeoutError:
         return False, f"Tempo esgotado ({timeout_s}s)."
     except OSError as e:
+        if _is_timeout_error(e):
+            return False, f"Tempo esgotado ({timeout_s}s), favor atualize a página e tente novamente."
         return False, str(e)
 
 
@@ -187,6 +259,20 @@ def _tab_fontes(root: Path, root_ok: bool, root_msg: str) -> None:
         st.markdown("Use **Escanear pastas agora** na barra lateral para carregar o inventário.")
         return
 
+    last_root_raw = (st.session_state.get("last_root") or "").strip()
+    if last_root_raw:
+        try:
+            if Path(last_root_raw).resolve() != root.resolve():
+                st.warning(
+                    "A **pasta** na barra lateral mudou desde o último escaneamento. "
+                    "O inventário abaixo ainda reflete a pasta anterior — use **Escanear pastas agora** para atualizar."
+                )
+        except OSError:
+            st.warning(
+                "Não foi possível comparar a pasta atual com a do último escaneamento. "
+                "Se você alterou o caminho, execute **Escanear pastas agora**."
+            )
+
     st.success(f"Raiz usada no último escaneamento: `{st.session_state.get('last_root', root)}`")
     total_files = sum(s.file_count for s in scans)
     m1, m2, m3 = st.columns(3)
@@ -247,6 +333,18 @@ def _tab_indexacao_rag(scans: list[ProjectScan] | None) -> None:
     if not scans:
         st.info("Inventário vazio — nada para indexar.")
         return
+
+    last_root_raw = (st.session_state.get("last_root") or "").strip()
+    if last_root_raw:
+        try:
+            if Path(last_root_raw).resolve() != _root_from_session().resolve():
+                st.warning(
+                    "A pasta de projetos na barra lateral **não coincide** com a pasta do último escaneamento. "
+                    "Reescaneie antes de confiar nos números abaixo."
+                )
+        except OSError:
+            pass
+
     total = sum(s.file_count for s in scans)
     st.success(f"Há **{total}** arquivo(s) em **{len(scans)}** projeto(s) elegíveis ao pipeline.")
     st.markdown(
@@ -267,8 +365,84 @@ def _tab_indexacao_rag(scans: list[ProjectScan] | None) -> None:
 
 def _tab_chat() -> None:
     st.header("Chat com o agente")
-    st.caption("Fase 3 do playbook: pergunta → recuperação (txtai) → LM Studio → resposta com **citação** de fonte.")
-    st.info("Interface de chat em construção. Enquanto isso, valide o LM Studio na aba **Diagnóstico**.")
+    st.caption(
+        "Conversa direta com o modelo carregado no **LM Studio** (API OpenAI-compatible). "
+        "Quando o RAG estiver pronto, o contexto dos documentos será adicionado aqui com citações."
+    )
+
+    base, model, api_key = _llm_runtime_config()
+    if not base or not model:
+        st.warning(
+            "Defina **`LLM_BASE_URL`** (ex.: `http://172.21.64.1:1234` ou `http://host.docker.internal:1234`) "
+            "e **`LLM_MODEL`** (ex.: `qwen/qwen3.5-9b`) no `.env` / ambiente do Compose."
+        )
+        st.info("Use a aba **Diagnóstico** para testar `GET /v1/models` antes de conversar.")
+        return
+
+    st.caption(f"Servidor: `{base}` · Modelo: `{model}`")
+
+    if "chat_messages" not in st.session_state:
+        st.session_state.chat_messages = []
+
+    c1, c2 = st.columns([1, 4])
+    with c1:
+        if st.button("Limpar conversa", key="btn_clear_chat"):
+            st.session_state.chat_messages = []
+            st.rerun()
+    with c2:
+        use_stream = st.toggle("Resposta em streaming", value=True, key="chat_use_stream")
+
+    for msg in st.session_state.chat_messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    if prompt := st.chat_input("Envie uma mensagem para o modelo…"):
+        st.session_state.chat_messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        client = OpenAI(base_url=base, api_key=api_key, timeout=120.0)
+        api_messages = [{"role": "system", "content": CHAT_SYSTEM_PROMPT}]
+        api_messages += [
+            {"role": m["role"], "content": m["content"]}
+            for m in st.session_state.chat_messages
+        ]
+
+        with st.chat_message("assistant"):
+            try:
+                if use_stream:
+                    stream = client.chat.completions.create(
+                        model=model,
+                        messages=api_messages,
+                        stream=True,
+                    )
+
+                    def _token_stream():
+                        for chunk in stream:
+                            if not chunk.choices:
+                                continue
+                            delta = chunk.choices[0].delta
+                            if delta and delta.content:
+                                yield delta.content
+
+                    full_text = st.write_stream(_token_stream)
+                    st.session_state.chat_messages.append(
+                        {"role": "assistant", "content": full_text or ""}
+                    )
+                else:
+                    with st.spinner("Gerando resposta…"):
+                        completion = client.chat.completions.create(
+                            model=model,
+                            messages=api_messages,
+                            stream=False,
+                        )
+                    text = (completion.choices[0].message.content or "").strip()
+                    st.markdown(text)
+                    st.session_state.chat_messages.append({"role": "assistant", "content": text})
+            except Exception as exc:
+                st.error(f"Erro ao chamar o LM Studio: {exc}")
+                st.session_state.chat_messages.pop()
+                st.caption("A última mensagem sua foi removida do histórico; ajuste o servidor ou o modelo e tente de novo.")
 
 
 def _tab_olap() -> None:
@@ -296,7 +470,10 @@ def _tab_diagnostico(root: Path, root_ok: bool, root_msg: str) -> None:
     st.subheader("LM Studio (API compatível com OpenAI)")
     llm_base = os.environ.get("LLM_BASE_URL", "").strip()
     llm_model = os.environ.get("LLM_MODEL", "").strip()
+    resolved_base = _normalize_openai_base_url(llm_base) if llm_base else ""
     st.text_input("LLM_BASE_URL (somente leitura na UI)", value=llm_base or "(não definido)", disabled=True)
+    if resolved_base and resolved_base != llm_base.strip().rstrip("/"):
+        st.caption(f"URL efetiva usada pelo app (com `/v1`): `{resolved_base}`")
     st.text_input("LLM_MODEL", value=llm_model or "(não definido)", disabled=True)
     if llm_base:
         if st.button("Testar GET /v1/models (timeout 5s)", key="btn_llm_ping"):

@@ -19,4 +19,9 @@ def llm_model() -> str:
 
 
 def llm_api_key() -> str:
-    return os.environ.get("LLM_API_KEY", "lm-studio")
+    """Compatível com `.env` da API (`LLM_API_KEY`) e com o Compose/README (`OPENAI_API_KEY`)."""
+    for env_name in ("LLM_API_KEY", "OPENAI_API_KEY"):
+        v = os.environ.get(env_name, "").strip()
+        if v:
+            return v
+    return "lm-studio"
