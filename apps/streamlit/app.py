@@ -30,6 +30,16 @@ from projects_loader import (
     scan_all_projects,
     validate_projetos_root,
 )
+from rag import (
+    EMBEDDING_MODEL_ID,
+    build_index,
+    format_context_for_llm,
+    index_mtime,
+    index_ready,
+    txtai_data_root,
+    txtai_index_path,
+)
+from rag.index_txtai import search_with_backend
 
 load_dotenv()
 
@@ -118,6 +128,29 @@ def _is_timeout_error(exc: BaseException) -> bool:
     if isinstance(cause, BaseException) and _is_timeout_error(cause):
         return True
     return False
+
+
+@st.cache_resource(show_spinner="Carregando índice vetorial (txtai)…")
+def _txtai_backend_cached(mtime_key: float):
+    """Instância txtai reutilizável; invalida quando ``mtime_key`` muda após reindexação."""
+    if mtime_key <= 0:
+        return None
+    from txtai import Embeddings
+
+    emb = Embeddings()
+    emb.load(str(txtai_index_path()))
+    return emb
+
+
+def rag_semantic_search(query: str, limit: int) -> list[dict]:
+    """Busca semântica usando cache do backend (evita recarregar o modelo a cada interação)."""
+    if not index_ready():
+        return []
+    mt = index_mtime()
+    emb = _txtai_backend_cached(mt)
+    if emb is None:
+        return []
+    return search_with_backend(emb, query, limit)
 
 
 def _check_openai_compatible_models(base_url: str, *, timeout_s: float = 5.0) -> tuple[bool, str]:
@@ -325,10 +358,19 @@ def _tab_fontes(root: Path, root_ok: bool, root_msg: str) -> None:
 def _tab_indexacao_rag(scans: list[ProjectScan] | None) -> None:
     st.header("Indexação RAG")
     st.caption(
-        "Próxima entrega (playbook): parsing → chunks com metadados (projeto, arquivo, aba) → **txtai** em volume persistente."
+        f"Pipeline: extração (docx/xlsx/pdf/txt/md/csv) → chunking → **`txtai`** + "
+        f"[`{EMBEDDING_MODEL_ID}`](https://huggingface.co/{EMBEDDING_MODEL_ID}). "
+        f"Índice em `{txtai_index_path()}`."
     )
+
+    st.markdown(
+        f"- **Volume dados txtai:** `{txtai_data_root()}`\n"
+        f"- **Índice salvo:** `{txtai_index_path()}`\n"
+        f"- **Índice pronto:** {'sim' if index_ready() else 'não'}"
+    )
+
     if scans is None:
-        st.warning("Faça um escaneamento na aba **Fontes e inventário** (barra lateral) antes de planejar a indexação.")
+        st.warning("Faça um escaneamento na aba **Fontes e inventário** (barra lateral) antes de indexar.")
         return
     if not scans:
         st.info("Inventário vazio — nada para indexar.")
@@ -340,34 +382,165 @@ def _tab_indexacao_rag(scans: list[ProjectScan] | None) -> None:
             if Path(last_root_raw).resolve() != _root_from_session().resolve():
                 st.warning(
                     "A pasta de projetos na barra lateral **não coincide** com a pasta do último escaneamento. "
-                    "Reescaneie antes de confiar nos números abaixo."
+                    "Reescaneie antes de indexar."
                 )
         except OSError:
             pass
 
     total = sum(s.file_count for s in scans)
-    st.success(f"Há **{total}** arquivo(s) em **{len(scans)}** projeto(s) elegíveis ao pipeline.")
-    st.markdown(
-        "Use `documents_by_project(scans)` do `projects_loader` para iterar por projeto sem vazar caminhos cruzados. "
-        "Cada `ScannedFile` traz `absolute_path`, `relative_path` e `project_id` para anexar ao vetor store."
+    st.success(f"**{total}** arquivo(s) em **{len(scans)}** projeto(s) no inventário atual.")
+
+    options = sorted({s.project_id for s in scans})
+    selected = st.multiselect(
+        "Projetos a incluir no índice",
+        options=options,
+        default=options,
+        help="Vazio = todos os projetos listados.",
     )
-    with st.expander("Contrato sugerido para o índice (txtai / metadados)"):
+    project_filter = set(selected) if selected else None
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        chunk_chars = st.number_input(
+            "Tamanho máx. do chunk (caracteres)",
+            min_value=200,
+            max_value=4000,
+            value=520,
+            step=20,
+            help="O modelo MPNet usa até ~128 tokens; ~520 caracteres é um valor seguro para pt-BR.",
+        )
+    with c2:
+        overlap = st.number_input(
+            "Sobreposição entre chunks",
+            min_value=0,
+            max_value=800,
+            value=80,
+            step=10,
+        )
+    with c3:
+        batch_size = st.number_input(
+            "Tamanho do lote (index txtai)",
+            min_value=8,
+            max_value=512,
+            value=64,
+            step=8,
+        )
+
+    max_doc = st.number_input(
+        "Limite de caracteres por arquivo (extração)",
+        min_value=50_000,
+        max_value=10_000_000,
+        value=2_000_000,
+        step=100_000,
+        help="Evita carregar PDF/planilhas enormes inteiros na memória.",
+    )
+
+    replace = st.checkbox(
+        "Substituir índice existente",
+        value=True,
+        help="Remove o diretório do índice anterior antes de gravar o novo.",
+    )
+    if not replace:
+        st.caption(
+            "Sem substituir, o txtai **acrescenta** ao índice já salvo — pode haver duplicatas. "
+            "Para reindexação limpa, mantenha esta opção marcada."
+        )
+
+    status_box = st.empty()
+
+    def _progress(msg: str) -> None:
+        status_box.caption(msg)
+
+    if st.button("Construir índice agora", type="primary", key="btn_build_index"):
+        with st.spinner("Indexando documentos… pode levar vários minutos na primeira vez (download do modelo)."):
+            stats = build_index(
+                scans,
+                project_ids=project_filter,
+                max_chars=int(chunk_chars),
+                overlap=int(overlap),
+                max_doc_chars=int(max_doc),
+                batch_size=int(batch_size),
+                replace_existing=replace,
+                progress=_progress,
+            )
+        _txtai_backend_cached.clear()
+        st.session_state["last_index_stats"] = stats
+        st.success(
+            f"Chunks gravados: **{stats.chunks_written}** · "
+            f"Arquivos com texto: **{stats.files_extracted}** · "
+            f"Vazios / ignorados: **{stats.files_empty}**"
+        )
+        if stats.errors:
+            with st.expander("Avisos e erros (detalhe)"):
+                st.code("\n".join(stats.errors[:200]), language="text")
+                if len(stats.errors) > 200:
+                    st.caption("Lista truncada.")
+        st.rerun()
+
+    prev = st.session_state.get("last_index_stats")
+    if prev:
+        st.info(
+            f"Última execução nesta sessão: **{prev.chunks_written}** chunks · "
+            f"{prev.files_extracted} arquivos com texto · {prev.files_empty} vazios."
+        )
+
+    with st.expander("Metadados por chunk (campos armazenados com o texto)"):
         st.json(
             {
-                "exemplo_metadados_por_chunk": {
-                    "project_id": "253 - ELISA indireto Dengue",
-                    "source_relative": "results/amostras_dengue.xlsx",
-                    "content_hash_sha256": "<opcional>",
-                }
+                "text": "trecho indexado",
+                "project_id": "nome da pasta do projeto",
+                "relative_path": "caminho dentro do projeto",
+                "chunk_index": 0,
+                "extract_detail": "ex.: xlsx: abas e linhas",
             }
         )
+
+
+def _tab_rag_dev() -> None:
+    """Ferramentas de desenvolvimento: inspecionar busca semântica sem passar pelo LLM."""
+    st.header("Teste RAG (desenvolvedor)")
+    st.caption(
+        "Consulta direta ao índice **txtai** (mesmo backend do chat com RAG). "
+        "Use para validar chunking, metadados e relevância antes de acoplar ao LM Studio."
+    )
+
+    st.markdown(
+        f"- Modelo de embedding: `{EMBEDDING_MODEL_ID}`\n"
+        f"- Índice: `{txtai_index_path()}` — **pronto:** {'sim' if index_ready() else 'não'}"
+    )
+
+    if not index_ready():
+        st.warning("Construa um índice na aba **Indexação RAG** antes de testar buscas.")
+        return
+
+    q = st.text_input("Consulta semântica", placeholder="Ex.: validade do reagente X no projeto ELISA")
+    top_k = st.slider("Top-K", min_value=1, max_value=25, value=8)
+
+    if st.button("Executar busca", type="primary", key="btn_rag_dev_search"):
+        if not q.strip():
+            st.error("Informe uma consulta.")
+        else:
+            with st.spinner("Buscando…"):
+                hits = rag_semantic_search(q, top_k)
+            if not hits:
+                st.info("Nenhum resultado para esta consulta.")
+            else:
+                st.metric("Resultados", len(hits))
+                for i, h in enumerate(hits, start=1):
+                    score = h.get("score", h.get("similarity"))
+                    body = (h.get("text") or "").strip()
+                    title = f"#{i} · score={score}"
+                    with st.expander(title, expanded=(i <= 3)):
+                        st.markdown(body if body else "_(sem texto)_")
+                        with st.popover("JSON bruto"):
+                            st.json(h)
 
 
 def _tab_chat() -> None:
     st.header("Chat com o agente")
     st.caption(
-        "Conversa direta com o modelo carregado no **LM Studio** (API OpenAI-compatible). "
-        "Quando o RAG estiver pronto, o contexto dos documentos será adicionado aqui com citações."
+        "Conversa com o modelo **LM Studio** (API OpenAI-compatible). "
+        "Opcionalmente injeta trechos recuperados pelo índice **txtai** (RAG)."
     )
 
     base, model, api_key = _llm_runtime_config()
@@ -384,13 +557,35 @@ def _tab_chat() -> None:
     if "chat_messages" not in st.session_state:
         st.session_state.chat_messages = []
 
+    r1, r2, r3 = st.columns([2, 1, 2])
+    with r1:
+        use_rag = st.toggle(
+            "Usar RAG (txtai)",
+            value=index_ready(),
+            disabled=not index_ready(),
+            key="chat_use_rag",
+            help="Recupera trechos do índice com a pergunta atual e envia como contexto ao modelo.",
+        )
+    with r2:
+        rag_top_k = st.number_input(
+            "Trechos RAG",
+            min_value=1,
+            max_value=20,
+            value=6,
+            key="chat_rag_top_k",
+            disabled=not use_rag,
+        )
+    with r3:
+        use_stream = st.toggle("Resposta em streaming", value=True, key="chat_use_stream")
+
+    if use_rag and not index_ready():
+        st.warning("Índice txtai indisponível. Construa em **Indexação RAG** ou desative o RAG.")
+
     c1, c2 = st.columns([1, 4])
     with c1:
         if st.button("Limpar conversa", key="btn_clear_chat"):
             st.session_state.chat_messages = []
             st.rerun()
-    with c2:
-        use_stream = st.toggle("Resposta em streaming", value=True, key="chat_use_stream")
 
     for msg in st.session_state.chat_messages:
         with st.chat_message(msg["role"]):
@@ -402,7 +597,25 @@ def _tab_chat() -> None:
             st.markdown(prompt)
 
         client = OpenAI(base_url=base, api_key=api_key, timeout=120.0)
-        api_messages = [{"role": "system", "content": CHAT_SYSTEM_PROMPT}]
+
+        system_prompt = CHAT_SYSTEM_PROMPT
+        if use_rag and index_ready():
+            hits = rag_semantic_search(prompt, int(rag_top_k))
+            ctx = format_context_for_llm(hits)
+            if ctx:
+                system_prompt += (
+                    "\n\n### Contexto recuperado dos documentos do laboratório\n"
+                    + ctx
+                    + "\n\nBaseie respostas sobre ensaios neste contexto quando for relevante; "
+                    "cite projeto e arquivo como nos cabeçalhos [n]. Se o contexto não ajudar, diga claramente."
+                )
+            else:
+                system_prompt += (
+                    "\n\n(Nenhum trecho relevante foi recuperado do índice para esta pergunta — "
+                    "não invente dados de ensaios.)"
+                )
+
+        api_messages = [{"role": "system", "content": system_prompt}]
         api_messages += [
             {"role": m["role"], "content": m["content"]}
             for m in st.session_state.chat_messages
@@ -467,6 +680,11 @@ def _tab_diagnostico(root: Path, root_ok: bool, root_msg: str) -> None:
         "No Compose, volumes típicos: `/data/projetos` (ingestão), `/data/txtai`, `/data/duckdb`, `/data/sqlite`."
     )
 
+    st.subheader("txtai / RAG")
+    st.write(f"- `ASSISTENTE_TXTAI_DIR` / dados: `{txtai_data_root()}`")
+    st.write(f"- Índice: `{txtai_index_path()}`")
+    st.write(f"- Índice pronto: **{'sim' if index_ready() else 'não'}** · modelo: `{EMBEDDING_MODEL_ID}`")
+
     st.subheader("LM Studio (API compatível com OpenAI)")
     llm_base = os.environ.get("LLM_BASE_URL", "").strip()
     llm_model = os.environ.get("LLM_MODEL", "").strip()
@@ -502,6 +720,7 @@ tabs = st.tabs(
         "Início",
         "Fontes e inventário",
         "Indexação RAG",
+        "Teste RAG (dev)",
         "Chat",
         "OLAP",
         "Diagnóstico",
@@ -517,8 +736,10 @@ with tabs[1]:
 with tabs[2]:
     _tab_indexacao_rag(scans)
 with tabs[3]:
-    _tab_chat()
+    _tab_rag_dev()
 with tabs[4]:
-    _tab_olap()
+    _tab_chat()
 with tabs[5]:
+    _tab_olap()
+with tabs[6]:
     _tab_diagnostico(root, root_ok, root_msg)
