@@ -4,3 +4,6 @@ venv/
 __pycache__/
 *.py[cod]
 .pytest_cache/
+
+# Índice txtai local (desenvolvimento fora do Docker)
+apps/streamlit/.txtai_data/

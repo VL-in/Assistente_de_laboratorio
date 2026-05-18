@@ -1,11 +1,11 @@
 # Assistente de lab
 
-Aplicação web **MVP offline-first** para apoiar P&D com documentos locais, **RAG** (planejado: txtai), **OLAP** (planejado: DuckDB) e geração via **LM Studio** no host. A UI e o pipeline Python rodam **no Docker**; dados sensíveis e modelo ficam na sua máquina.
+Aplicação web **MVP offline-first** para apoiar P&D com documentos locais, **RAG** (txtai + embeddings multilíngues), **OLAP** (planejado: DuckDB) e geração via **LM Studio** no host. A UI e o pipeline Python rodam **no Docker**; dados sensíveis e o modelo de linguagem ficam na sua máquina.
 
 | Documento | Função |
 |-----------|--------|
-| [`.cursor/plans/20260429playbook_mvp_biotech.plan.md`](.cursor/plans/20260429playbook_mvp_biotech.plan.md) | Playbook: fases, escopo, riscos e **tabela de progresso** atualizada |
-| [`.env.docker.example`](.env.docker.example) | Modelo de `.env` para Compose: caminhos, LM Studio e **placeholders** de chaves de API (copiar para `.env`) |
+| [`.cursor/plans/20260429playbook_mvp_biotech.plan.md`](.cursor/plans/20260429playbook_mvp_biotech.plan.md) | Playbook: fases, escopo, riscos e **tabela de progresso** |
+| [`.env.docker.example`](.env.docker.example) | Modelo de `.env` para Compose (copiar para `.env` na raiz) |
 
 ---
 
@@ -15,31 +15,78 @@ Aplicação web **MVP offline-first** para apoiar P&D com documentos locais, **R
 Assistente_de_lab/
 ├── docker-compose.yml          # Orquestração: Streamlit + volumes + rede ao host
 ├── docker/streamlit/Dockerfile # Imagem da app (usuário não-root, HEALTHCHECK HTTP)
-├── .env.docker.example         # Modelo de `.env` na raiz (segredos ficam só no `.env`)
+├── .env.docker.example         # Modelo de `.env` (segredos ficam só no `.env`)
 ├── apps/streamlit/
-│   ├── app.py                  # UI: abas (Início, Fontes, RAG, Chat, OLAP, Diagnóstico)
-│   ├── projects_loader.py      # Inventário: um subdir. de 1º nível = projeto; walk recursivo
+│   ├── app.py                  # UI: Início, Fontes, Indexação RAG, Teste RAG, Chat, OLAP, Diagnóstico
+│   ├── projects_loader.py      # Inventário: um subdiretório de 1º nível = projeto
+│   ├── rag/                    # Extração, chunking, índice txtai (upsert em lotes)
 │   └── requirements.txt
 └── apps/api/                   # FastAPI opcional (fora do caminho crítico do MVP)
 ```
 
-**Convenção de projeto:** dentro da pasta configurada como raiz (ex.: `Projetos`), cada **subdiretório imediato** é um **projeto** (`project_id` = nome da pasta). Pastas como `planning/` ou `results/` pertencem ao mesmo projeto.
+**Convenção de projeto:** na pasta configurada como raiz (ex.: `Projetos`), cada **subdiretório imediato** é um **projeto** (`project_id` = nome da pasta). Pastas como `planning/` ou `results/` pertencem ao mesmo projeto.
 
 ---
 
-## Executar com Docker (recomendado)
+## Guia rápido (primeira execução)
 
-**Pré-requisitos:** [Docker Desktop](https://www.docker.com/products/docker-desktop/) (Windows/macOS) ou Docker Engine + Compose v2 (Linux). Para testar LLM a partir do contêiner: [LM Studio](https://lmstudio.ai/) com servidor local ativo no host.
+Siga esta ordem para subir a aplicação sem erros de rede, LLM ou RAG.
 
-1. Na **raiz** do repositório, copie [`.env.docker.example`](.env.docker.example) para **`.env`** e edite pelo menos `PROJETOS_HOST_DIR` (caminho absoluto no **host** da pasta que contém um subdiretório por projeto). Chaves de API reais ficam **apenas** no `.env` (arquivo ignorado pelo Git).
+### 1. Pré-requisitos
 
-2. Suba o stack:
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) (Windows/macOS) ou Docker Engine + Compose v2 (Linux)
+- [LM Studio](https://lmstudio.ai/) com um modelo de chat carregado e o **servidor local** ativo (porta padrão **1234**)
+- Uma pasta de projetos no host, com **um subdiretório por projeto** e documentos (`.docx`, `.xlsx`, `.pdf`, `.txt`, `.md`, `.csv`)
 
-   ```bash
-   docker compose up --build
-   ```
+### 2. Configurar `.env`
 
-3. Abra no navegador: **`http://127.0.0.1:8502`** (ou `http://127.0.0.1:${STREAMLIT_PORT}` se alterou o `.env`).
+Na **raiz** do repositório:
+
+```bash
+cp .env.docker.example .env
+```
+
+Edite o `.env` (nunca commite este arquivo):
+
+| Variável | Obrigatório | O que preencher |
+|----------|-------------|-----------------|
+| `PROJETOS_HOST_DIR` | Sim | Caminho **absoluto** no host da pasta que contém os projetos (ex.: `D:/Vanessa/AI_project/Projetos`) |
+| `LLM_BASE_URL` | Sim | URL do LM Studio **acessível de dentro do contêiner** (veja [LM Studio](#lm-studio-no-docker)) |
+| `LLM_MODEL` | Sim | ID **exato** do modelo na aba Server do LM Studio (ex.: `qwen/qwen3.5-9b`) |
+| `OPENAI_API_KEY` | Recomendado | Valor dummy, ex.: `lm-studio` |
+| `STREAMLIT_PORT` | Não | Padrão `8502` |
+
+### 3. Subir a aplicação
+
+```bash
+docker compose up --build
+```
+
+Para rodar em segundo plano:
+
+```bash
+docker compose up -d --build
+```
+
+Abra no navegador: **http://127.0.0.1:8502**
+
+Após alterar o `.env`, recrie o contêiner para aplicar as variáveis:
+
+```bash
+docker compose up -d --build
+```
+
+### 4. Validar na interface
+
+1. **Diagnóstico** — confirme pasta de projetos e clique em **Testar GET /v1/models** (LM Studio deve responder).
+2. **Fontes e inventário** (barra lateral) — informe a raiz (ou use a do `.env`) e **Escanear**.
+3. **Indexação RAG** — **Construir índice agora** com **Substituir índice existente** marcado (primeira vez ou após atualizar o app).
+4. **Teste RAG (dev)** — faça uma busca semântica para validar recuperação de trechos.
+5. **Chat** — envie uma mensagem; opcionalmente ligue **Usar RAG (txtai)** se o índice estiver pronto.
+
+---
+
+## Executar com Docker (detalhes)
 
 O serviço usa `restart: unless-stopped` e `PYTHONUNBUFFERED=1` para logs mais imediatos.
 
@@ -48,37 +95,87 @@ O serviço usa `restart: unless-stopped` e `PYTHONUNBUFFERED=1` para logs mais i
 | Variável | Onde | Descrição |
 |----------|------|-----------|
 | `PROJETOS_HOST_DIR` | Host | Pasta montada em `/data/projetos` no contêiner (somente leitura). |
-| `STREAMLIT_PORT` | Host | Porta publicada (padrão **8502**). Deve coincidir com a porta interna mapeada `HOST:8502→8502`. |
-| `ASSISTENTE_PROJETOS_DIR` | Contêiner | Definido no Compose como `/data/projetos` (não precisa mudar no uso normal). |
-| `LLM_BASE_URL` | Contêiner | Base OpenAI-compatível (ex.: `http://172.21.64.1:1234` ou `http://host.docker.internal:1234/v1`). Pode omitir o sufixo `/v1`; o app completa automaticamente. |
-| `LLM_MODEL` | Contêiner | ID exato do modelo no LM Studio. |
+| `STREAMLIT_PORT` | Host | Porta publicada (padrão **8502**). Mapeamento: `HOST:8502→8502`. |
+| `ASSISTENTE_PROJETOS_DIR` | Contêiner | Definido no Compose como `/data/projetos` (não precisa alterar). |
+| `ASSISTENTE_TXTAI_DIR` | Contêiner | Volume persistente do índice txtai (`/data/txtai`). |
+| `LLM_BASE_URL` | Contêiner | Base OpenAI-compatível do LM Studio. Pode omitir o sufixo `/v1`; o app adiciona automaticamente. |
+| `LLM_MODEL` | Contêiner | ID exato do modelo carregado no LM Studio. |
 | `OPENAI_API_KEY` | Contêiner | Valor dummy aceito pelo LM Studio na maioria dos setups. |
+
+### LM Studio no Docker
+
+O contêiner **não** roda o LM Studio; ele só se conecta ao servidor no **host** ou na **rede local**. A URL em `LLM_BASE_URL` precisa funcionar **de dentro do contêiner**, não apenas no navegador do PC.
+
+| Cenário | Exemplo de `LLM_BASE_URL` | Observação |
+|---------|---------------------------|------------|
+| Docker Desktop (Windows/macOS), LM Studio no mesmo PC | `http://host.docker.internal:1234` | Opção mais simples no Desktop |
+| LM Studio em outro PC na rede (IP fixo) | `http://192.168.15.7:1234` | Use o IP real da máquina que hospeda o LM Studio |
+| IP do host visto pelo Docker (WSL2 / rede virtual) | `http://172.x.x.x:1234` | Só use se `curl` **de dentro do contêiner** responder |
+
+**Como testar se a URL está correta** (substitua pela sua URL):
+
+```bash
+docker exec assistente-lab-streamlit python -c "
+import json, os, urllib.request
+base = os.environ['LLM_BASE_URL'].rstrip('/')
+if not base.endswith('/v1'): base += '/v1'
+with urllib.request.urlopen(base + '/models', timeout=10) as r:
+    print(json.loads(r.read().decode())['data'][0]['id'])
+"
+```
+
+Se aparecer o nome do modelo, o chat na UI deve funcionar. Se der timeout ou *No route to host*, troque `LLM_BASE_URL`, salve o `.env` e rode `docker compose up -d --build` de novo.
+
+No LM Studio: aba **Server** → ative o servidor local → carregue o modelo → copie o **ID** para `LLM_MODEL`.
 
 ### Volumes dentro do contêiner
 
 | Caminho | Uso |
 |---------|-----|
-| `/data/projetos` | Bind do host: documentos dos projetos (**RO**). |
-| `/data/txtai` | Volume nomeado: índice/embeddings (fases futuras). |
-| `/data/duckdb` | Volume nomeado: OLAP. |
-| `/data/sqlite` | Volume nomeado: metadados/auditoria (fases futuras). |
+| `/data/projetos` | Bind do host: documentos dos projetos (**somente leitura**) |
+| `/data/txtai` | Volume nomeado: índice vetorial RAG (persiste entre reinícios) |
+| `/data/duckdb` | Volume nomeado: OLAP (fases futuras) |
+| `/data/sqlite` | Volume nomeado: metadados (fases futuras) |
 
 ### Saúde do contêiner (HEALTHCHECK)
 
-A imagem define verificação HTTP em **`http://127.0.0.1:8502/_stcore/health`** (endpoint interno do Streamlit). Para inspecionar no host:
+A imagem verifica **`http://127.0.0.1:8502/_stcore/health`** (endpoint interno do Streamlit).
 
 ```bash
 docker inspect --format='{{json .State.Health}}' assistente-lab-streamlit
 ```
 
-Se o status ficar `unhealthy`, confira se o processo Streamlit subiu (logs: `docker compose logs streamlit`) e se a versão do Streamlit expõe `/_stcore/health` (Streamlit recente).
+No Windows (PowerShell), use `curl.exe` — o alias `curl` do PowerShell não é o mesmo comando:
 
-### Problemas comuns
+```powershell
+curl.exe -s -o NUL -w "HTTP %{http_code}`n" http://127.0.0.1:8502/_stcore/health
+```
 
-- **Pasta vazia ou “Caminho não existe”:** `PROJETOS_HOST_DIR` no `.env` incorreto ou drive não montado no Linux (use caminho absoluto real).
-- **LM Studio inalcançável no Diagnóstico:** servidor local desligado, firewall, ou URL errada. No Docker Desktop (Windows/macOS) use `host.docker.internal`; no Linux o Compose já inclui `extra_hosts: host.docker.internal:host-gateway`.
-- **Permissão negada em arquivos:** o bind é **somente leitura**; o usuário da imagem (`uid 10001`) precisa de permissão de leitura no host (no Windows com Docker Desktop costuma funcionar sem ajuste extra).
-- **Inventário vazio:** nenhum subdiretório na raiz, ou extensões na barra lateral não batem com os arquivos (veja filtro de extensões na UI).
+Esperado: **HTTP 200**. Logs: `docker compose logs streamlit --tail 50`.
+
+---
+
+## Pipeline RAG (txtai)
+
+Fluxo implementado na UI:
+
+```
+Pasta de projetos → inventário (scan) → extração de texto → chunking → índice txtai → busca / chat com contexto
+```
+
+| Etapa | Onde na UI | Detalhe técnico |
+|-------|------------|-----------------|
+| Inventário | Fontes e inventário | `projects_loader.py` — extensões filtráveis na barra lateral |
+| Extração | Indexação RAG | `rag/extract.py` — docx, xlsx, pdf, txt, md, csv |
+| Chunking | Indexação RAG | `rag/chunking.py` — padrão ~520 caracteres, sobreposição 80 |
+| Índice | Indexação RAG | `rag/index_txtai.py` — modelo `sentence-transformers/paraphrase-multilingual-mpnet-base-v2` |
+| Busca | Teste RAG / Chat | Similaridade semântica; trechos citam projeto e arquivo |
+
+**Primeira indexação:** na aba **Indexação RAG**, use **Substituir índice existente** (recomendado). A primeira execução pode demorar vários minutos (download do modelo de embeddings).
+
+**Reindexação incremental:** desmarque *Substituir* apenas se souber que quer **acrescentar ou atualizar** chunks no índice já salvo (mesmo `id` de chunk é atualizado, não duplicado).
+
+**Chat com RAG:** na aba **Chat**, ative **Usar RAG (txtai)** depois que o índice estiver pronto (aba Diagnóstico mostra *Índice pronto: sim*).
 
 ---
 
@@ -91,11 +188,31 @@ cd apps/streamlit
 python -m venv .venv
 .\.venv\Scripts\activate
 pip install -r requirements.txt
-# Opcional: $env:ASSISTENTE_PROJETOS_DIR="D:\caminho\Projetos"
+$env:ASSISTENTE_PROJETOS_DIR="D:\caminho\Projetos"
+$env:LLM_BASE_URL="http://127.0.0.1:1234"
+$env:LLM_MODEL="qwen/qwen3.5-9b"
+$env:OPENAI_API_KEY="lm-studio"
 streamlit run app.py --server.port 8502
 ```
 
-Fora do Docker, se `ASSISTENTE_PROJETOS_DIR` não estiver definida e não houver `/.dockerenv`, o loader usa um **fallback Windows** em `projects_loader.py` (ajuste por env em outros SO).
+Fora do Docker, se `ASSISTENTE_PROJETOS_DIR` não estiver definida, o loader usa um fallback Windows em `projects_loader.py` (em outros SO, defina a variável).
+
+LM Studio em `127.0.0.1:1234` funciona no modo local; no Docker use `host.docker.internal` ou o IP da rede conforme a tabela acima.
+
+---
+
+## Problemas comuns
+
+| Sintoma | Causa provável | O que fazer |
+|---------|----------------|-------------|
+| Pasta vazia ou “Caminho não existe” | `PROJETOS_HOST_DIR` incorreto | Caminho absoluto real no host; um subdiretório por projeto |
+| **LM Studio inalcançável** no Diagnóstico | Servidor desligado, firewall ou URL que não funciona **no contêiner** | Teste com `docker exec` (seção [LM Studio](#lm-studio-no-docker)); prefira `host.docker.internal` ou IP LAN (`192.168.x.x`) |
+| Chat sem resposta / erro de conexão | `LLM_MODEL` diferente do ID no LM Studio | Copie o ID exato da aba Server |
+| Inventário vazio | Sem subpastas na raiz ou extensões filtradas | Ajuste filtro na barra lateral; confira extensões dos arquivos |
+| **RAG não retorna documentos esperados** | Índice não construído ou desatualizado | Escaneie → **Indexação RAG** → *Substituir índice* → reconstrua |
+| Busca só mostra planilhas grandes | Projeto com muitos chunks de xlsx domina o top‑K | Normal em MVP; refine a pergunta ou use **Teste RAG** com mais trechos |
+| `unhealthy` no Docker | Streamlit não subiu | `docker compose logs streamlit` |
+| Permissão negada em arquivos | Bind somente leitura | Usuário da imagem (`uid 10001`) precisa ler os arquivos no host |
 
 ---
 
@@ -103,13 +220,14 @@ Fora do Docker, se `ASSISTENTE_PROJETOS_DIR` não estiver definida e não houver
 
 | Necessidade | Começar em |
 |-------------|------------|
-| UI, inventário | `apps/streamlit/app.py`, `projects_loader.py` |
-| Chat com LM Studio (OpenAI-compat) | `apps/streamlit/app.py` (SDK `openai`, env `LLM_BASE_URL`, `LLM_MODEL`) |
-| Regra “um projeto por pasta”, scan, hash opcional | `apps/streamlit/projects_loader.py` |
+| UI, inventário, abas | `apps/streamlit/app.py` |
+| Chat + RAG no prompt | `apps/streamlit/app.py` (`rag_semantic_search`, `format_context_for_llm`) |
+| Extração, chunking, índice, busca | `apps/streamlit/rag/` |
+| Scan de projetos | `apps/streamlit/projects_loader.py` |
 | Imagem e healthcheck | `docker/streamlit/Dockerfile` |
-| Portas, volumes, env injetada | `docker-compose.yml` |
+| Portas, volumes, env | `docker-compose.yml` |
 
-Próximas entregas planejadas estão descritas por fase no **playbook** (parsing, txtai, DuckDB na UI, autenticação, etc.).
+Próximas entregas (DuckDB na UI, autenticação, etc.) estão no **playbook**.
 
 ---
 
