@@ -33,9 +33,9 @@ def chunk_text(text: str, *, max_chars: int, overlap: int) -> list[str]:
             chunks.append(piece)
         if end >= n:
             break
-        start = max(0, end - overlap)
-        # evita loop infinito se overlap zero e texto enorme sem espaços
-        if start >= end:
-            start = end
+        next_start = end - overlap
+        if next_start <= start:
+            next_start = end  # garante avanço mesmo com overlap grande ou trecho vazio após strip
+        start = next_start
 
     return chunks

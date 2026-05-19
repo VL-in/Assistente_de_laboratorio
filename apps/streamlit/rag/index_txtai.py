@@ -6,16 +6,28 @@ import hashlib
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Callable
 
-from projects_loader import ProjectScan, ScannedFile
+from projects_loader import ProjectScan, ScannedFile, compute_file_sha256
 
 from .chunking import chunk_text
 from .extract import extract_from_scanned_file
+from .manifest import (
+    EXTRACTION_LOGIC_VERSION,
+    IndexManifest,
+    chunking_signature,
+    file_index_key,
+    load_manifest,
+    manifest_exists,
+    remove_manifest_file,
+    save_manifest,
+)
 from .paths import ensure_txtai_parent_exists, txtai_index_path
 
 # Modelo fixo do MVP (multilingual, ~768 dim; max 128 tokens — ver chunking na UI).
 EMBEDDING_MODEL_ID = "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"
+
+Row = tuple[str, dict]
 
 
 def embeddings_config() -> dict:
@@ -43,11 +55,13 @@ class BuildStats:
     files_total: int = 0
     files_extracted: int = 0
     files_empty: int = 0
+    files_skipped_unchanged: int = 0
+    files_reindexed: int = 0
+    files_removed: int = 0
     chunks_written: int = 0
+    chunks_deleted: int = 0
+    incremental: bool = False
     errors: list[str] = field(default_factory=list)
-
-
-Row = tuple[str, dict]
 
 
 def _flatten_files(
@@ -63,6 +77,62 @@ def _flatten_files(
     return out
 
 
+def resolve_content_hash(sf: ScannedFile) -> tuple[str | None, str | None]:
+    """
+    Retorna ``(hash, erro)`` — hash do scan ou calculado agora; erro se ilegível.
+    """
+    if sf.content_hash_sha256:
+        return sf.content_hash_sha256, None
+    try:
+        return compute_file_sha256(sf.absolute_path), None
+    except OSError as exc:
+        return None, str(exc)
+
+
+def rows_for_file(
+    sf: ScannedFile,
+    *,
+    max_chars: int,
+    overlap: int,
+    max_doc_chars: int,
+) -> tuple[list[Row], bool, str | None]:
+    """
+  Retorna (linhas para txtai, teve_texto, mensagem_erro).
+    ``teve_texto`` False = arquivo vazio ou falha de extração.
+    """
+    label = f"{sf.project_id}/{sf.relative_path}"
+    outcome = extract_from_scanned_file(sf, max_chars_total=max_doc_chars)
+    if not outcome.text.strip():
+        err = f"{label}: sem texto extraível"
+        if outcome.detail:
+            err += f" ({outcome.detail})"
+        return [], False, err
+    if not outcome.ok:
+        return [], False, f"{label}: {outcome.detail}"
+
+    parts = chunk_text(outcome.text, max_chars=max_chars, overlap=overlap)
+    if not parts:
+        return [], False, None
+
+    rows: list[Row] = []
+    for idx, part in enumerate(parts):
+        uid = chunk_uid(sf, idx)
+        cited = (
+            f"[Projeto: {sf.project_id}] [Arquivo: {sf.relative_path}] [Chunk {idx}]\n"
+            f"{part}"
+        )
+        row_dict = {
+            "text": cited,
+            "project_id": sf.project_id,
+            "relative_path": sf.relative_path,
+            "chunk_index": idx,
+            "extract_detail": outcome.detail,
+        }
+        rows.append((uid, row_dict))
+
+    return rows, True, None
+
+
 def prepare_rows(
     scans: list[ProjectScan],
     *,
@@ -72,7 +142,7 @@ def prepare_rows(
     max_doc_chars: int,
     progress: Callable[[str], None] | None = None,
 ) -> tuple[list[Row], BuildStats]:
-    """Extrai texto, faz chunking e monta linhas ``(id, {text, ...})`` para o txtai."""
+    """Extrai texto, faz chunking e monta linhas ``(id, {text, ...})`` para o txtai (todos os arquivos)."""
     stats = BuildStats()
     rows: list[Row] = []
     files = _flatten_files(scans, project_ids=project_ids)
@@ -83,38 +153,72 @@ def prepare_rows(
         if progress:
             progress(label)
 
-        outcome = extract_from_scanned_file(sf, max_chars_total=max_doc_chars)
-        if not outcome.ok or not outcome.text.strip():
-            stats.files_empty += 1
-            if outcome.detail and not outcome.ok:
-                stats.errors.append(f"{label}: {outcome.detail}")
-            continue
-
-        parts = chunk_text(outcome.text, max_chars=max_chars, overlap=overlap)
-        if not parts:
+        file_rows, had_text, err = rows_for_file(
+            sf,
+            max_chars=max_chars,
+            overlap=overlap,
+            max_doc_chars=max_doc_chars,
+        )
+        if err:
+            stats.errors.append(err)
+        if not had_text:
             stats.files_empty += 1
             continue
 
         stats.files_extracted += 1
-
-        for idx, part in enumerate(parts):
-            uid = chunk_uid(sf, idx)
-            # Busca txtai expõe sobretudo id/text/score — citações ficam no texto indexado.
-            cited = (
-                f"[Projeto: {sf.project_id}] [Arquivo: {sf.relative_path}] [Chunk {idx}]\n"
-                f"{part}"
-            )
-            row_dict = {
-                "text": cited,
-                "project_id": sf.project_id,
-                "relative_path": sf.relative_path,
-                "chunk_index": idx,
-                "extract_detail": outcome.detail,
-            }
-            rows.append((uid, row_dict))
+        rows.extend(file_rows)
 
     stats.chunks_written = len(rows)
     return rows, stats
+
+
+def _delete_ids_batched(
+    emb: object,
+    ids: list[str],
+    *,
+    batch_size: int,
+    errors: list[str] | None = None,
+) -> int:
+    """Remove IDs duplicados e ignora falhas por lote (registra em ``errors``)."""
+    if not ids:
+        return 0
+    unique_ids = list(dict.fromkeys(ids))
+    deleted = 0
+    for i in range(0, len(unique_ids), batch_size):
+        batch = unique_ids[i : i + batch_size]
+        try:
+            emb.delete(batch)  # type: ignore[attr-defined]
+            deleted += len(batch)
+        except Exception as exc:  # noqa: BLE001
+            if errors is not None:
+                errors.append(f"Falha ao remover {len(batch)} chunk(s) do índice: {exc}")
+    return deleted
+
+
+def _upsert_rows_batched(
+    emb: object,
+    rows: list[Row],
+    *,
+    batch_size: int,
+    use_initial_index: bool,
+    progress: Callable[[str], None] | None,
+) -> None:
+    if not rows:
+        return
+    n = len(rows)
+    batch: list[Row] = []
+    first_batch = use_initial_index
+    for i, row in enumerate(rows):
+        batch.append(row)
+        if len(batch) >= batch_size or i == n - 1:
+            if first_batch:
+                emb.index(batch)  # type: ignore[attr-defined]
+                first_batch = False
+            else:
+                emb.upsert(batch)  # type: ignore[attr-defined]
+            batch.clear()
+            if progress:
+                progress(f"indexando… {min(i + 1, n)}/{n} chunks")
 
 
 def build_index(
@@ -126,17 +230,55 @@ def build_index(
     max_doc_chars: int,
     batch_size: int,
     replace_existing: bool,
+    incremental: bool | None = None,
     progress: Callable[[str], None] | None = None,
 ) -> BuildStats:
     """
-    Cria embeddings txtai e persiste em ``txtai_index_path()``.
+    Cria ou atualiza embeddings txtai em ``txtai_index_path()``.
 
-    ``replace_existing``: remove o diretório do índice anterior antes de gravar.
-    Lotes após o primeiro usam ``upsert`` — ``index()`` substitui o índice inteiro.
+    - ``replace_existing=True``: apaga índice + manifesto e reconstrói tudo.
+    - ``replace_existing=False`` e índice existente: reindexação **incremental por hash**
+      (pula arquivos inalterados; remove chunks de arquivos apagados; atualiza alterados).
+    - ``replace_existing=False`` sem índice: indexação completa inicial.
     """
     from txtai import Embeddings
 
-    rows, stats = prepare_rows(
+    files = _flatten_files(scans, project_ids=project_ids)
+    stats = BuildStats(files_total=len(files))
+
+    if not files:
+        stats.errors.append("Nenhum arquivo no inventário — escaneie as pastas antes de indexar.")
+        return stats
+
+    ensure_txtai_parent_exists()
+    index_path = txtai_index_path()
+
+    use_incremental = (
+        incremental
+        if incremental is not None
+        else (not replace_existing and index_ready())
+    )
+
+    if replace_existing:
+        use_incremental = False
+        if index_path.exists():
+            shutil.rmtree(index_path)
+        remove_manifest_file()
+
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if use_incremental:
+        return _build_index_incremental(
+            files,
+            stats=stats,
+            max_chars=max_chars,
+            overlap=overlap,
+            max_doc_chars=max_doc_chars,
+            batch_size=batch_size,
+            progress=progress,
+        )
+
+    rows, prep_stats = prepare_rows(
         scans,
         project_ids=project_ids,
         max_chars=max_chars,
@@ -144,18 +286,13 @@ def build_index(
         max_doc_chars=max_doc_chars,
         progress=progress,
     )
+    stats.files_extracted = prep_stats.files_extracted
+    stats.files_empty = prep_stats.files_empty
+    stats.errors.extend(prep_stats.errors)
 
     if not rows:
         stats.errors.append("Nenhum chunk gerado — verifique arquivos vazios ou filtros de projeto.")
         return stats
-
-    ensure_txtai_parent_exists()
-    index_path = txtai_index_path()
-
-    if replace_existing and index_path.exists():
-        shutil.rmtree(index_path)
-
-    index_path.parent.mkdir(parents=True, exist_ok=True)
 
     emb = Embeddings(embeddings_config())
     append_mode = not replace_existing and index_ready()
@@ -163,23 +300,194 @@ def build_index(
     try:
         if append_mode:
             emb.load(str(index_path))
+            _upsert_rows_batched(
+                emb,
+                rows,
+                batch_size=batch_size,
+                use_initial_index=False,
+                progress=progress,
+            )
+        else:
+            _upsert_rows_batched(
+                emb,
+                rows,
+                batch_size=batch_size,
+                use_initial_index=True,
+                progress=progress,
+            )
+        chunk_sig = chunking_signature(max_chars, overlap, max_doc_chars)
+        manifest = IndexManifest(
+            embedding_model=EMBEDDING_MODEL_ID,
+            extraction_logic_version=EXTRACTION_LOGIC_VERSION,
+            chunking_signature=chunk_sig,
+        )
+        files_by_key = {file_index_key(sf): sf for sf in files}
+        chunk_ids_by_key: dict[str, list[str]] = {}
+        for uid, row_dict in rows:
+            key = f"{row_dict['project_id']}/{row_dict['relative_path']}"
+            chunk_ids_by_key.setdefault(key, []).append(uid)
+        for key, chunk_ids in chunk_ids_by_key.items():
+            sf = files_by_key.get(key)
+            if not sf:
+                continue
+            content_hash, _hash_err = resolve_content_hash(sf)
+            if content_hash:
+                manifest.set_file(key, content_hash=content_hash, chunk_ids=chunk_ids)
+        emb.save(str(index_path))
+        save_manifest(manifest)
+        stats.chunks_written = len(rows)
+    finally:
+        emb.close()
 
-        batch: list[Row] = []
-        n = len(rows)
-        first_batch = True
-        for i, row in enumerate(rows):
-            batch.append(row)
-            if len(batch) >= batch_size or i == n - 1:
-                if first_batch and not append_mode:
-                    emb.index(batch)
-                    first_batch = False
-                else:
-                    emb.upsert(batch)
-                batch.clear()
-                if progress:
-                    progress(f"indexando… {min(i + 1, n)}/{n} chunks")
+    return stats
+
+
+def _build_index_incremental(
+    files: list[ScannedFile],
+    *,
+    stats: BuildStats,
+    max_chars: int,
+    overlap: int,
+    max_doc_chars: int,
+    batch_size: int,
+    progress: Callable[[str], None] | None,
+) -> BuildStats:
+    from txtai import Embeddings
+
+    stats.incremental = True
+    manifest = load_manifest()
+    had_manifest = manifest_exists() and bool(manifest.files)
+
+    if manifest.embedding_model and manifest.embedding_model != EMBEDDING_MODEL_ID:
+        stats.errors.append(
+            f"Modelo do manifesto ({manifest.embedding_model}) difere do atual "
+            f"({EMBEDDING_MODEL_ID}). Use **Substituir índice** para reconstruir."
+        )
+        return stats
+
+    if not had_manifest:
+        stats.errors.append(
+            "Manifesto ausente: todos os arquivos serão processados nesta execução. "
+            "Arquivos já removidos do disco podem permanecer no índice até a próxima "
+            "indexação incremental (ou use **Substituir índice** uma vez)."
+        )
+
+    manifest.embedding_model = EMBEDDING_MODEL_ID
+    chunk_sig = chunking_signature(max_chars, overlap, max_doc_chars)
+    extraction_ok = manifest.extraction_logic_version == EXTRACTION_LOGIC_VERSION
+    chunking_ok = manifest.chunking_signature == chunk_sig
+    if had_manifest and not extraction_ok:
+        stats.errors.append(
+            f"Versão da extração mudou ({manifest.extraction_logic_version} → "
+            f"{EXTRACTION_LOGIC_VERSION}): arquivos serão reprocessados."
+        )
+    if had_manifest and not chunking_ok and manifest.chunking_signature:
+        stats.errors.append(
+            f"Parâmetros de chunking mudaram ({manifest.chunking_signature} → "
+            f"{chunk_sig}): arquivos serão reprocessados."
+        )
+    manifest.extraction_logic_version = EXTRACTION_LOGIC_VERSION
+    manifest.chunking_signature = chunk_sig
+
+    current_keys: set[str] = set()
+    rows_to_upsert: list[Row] = []
+    ids_to_delete: list[str] = []
+    file_updates: list[tuple[str, str, list[str]]] = []  # key, hash, chunk_ids
+
+    for sf in files:
+        key = file_index_key(sf)
+        current_keys.add(key)
+        label = f"{sf.project_id}/{sf.relative_path}"
+        if progress:
+            progress(f"analisando {label}")
+
+        content_hash, hash_err = resolve_content_hash(sf)
+        if not content_hash:
+            detail = f" ({hash_err})" if hash_err else ""
+            stats.errors.append(f"{label}: não foi possível calcular SHA-256{detail}.")
+            continue
+
+        prev = manifest.get(key) if had_manifest else None
+        skip_unchanged = (
+            extraction_ok
+            and chunking_ok
+            and prev is not None
+            and prev.content_hash_sha256 == content_hash
+        )
+        if skip_unchanged:
+            stats.files_skipped_unchanged += 1
+            continue
+
+        if prev:
+            ids_to_delete.extend(prev.chunk_ids)
+
+        file_rows, had_text, err = rows_for_file(
+            sf,
+            max_chars=max_chars,
+            overlap=overlap,
+            max_doc_chars=max_doc_chars,
+        )
+        if err:
+            stats.errors.append(err)
+        if not had_text:
+            stats.files_empty += 1
+            if prev:
+                manifest.remove_file(key)
+                stats.files_removed += 1
+            continue
+
+        stats.files_reindexed += 1
+        stats.files_extracted += 1
+        rows_to_upsert.extend(file_rows)
+        file_updates.append((key, content_hash, [uid for uid, _ in file_rows]))
+
+    if had_manifest:
+        for key in list(manifest.files.keys()):
+            if key not in current_keys:
+                removed_ids = manifest.remove_file(key)
+                if removed_ids:
+                    ids_to_delete.extend(removed_ids)
+                    stats.files_removed += 1
+
+    if not ids_to_delete and not rows_to_upsert:
+        return stats
+
+    index_path = txtai_index_path()
+    emb = Embeddings(embeddings_config())
+    loaded_existing = False
+
+    try:
+        if index_ready():
+            emb.load(str(index_path))
+            loaded_existing = True
+        elif not rows_to_upsert:
+            stats.errors.append("Índice inexistente e nada a gravar.")
+            return stats
+
+        if ids_to_delete:
+            if progress:
+                progress(f"removendo {len(ids_to_delete)} chunk(s) obsoleto(s)…")
+            stats.chunks_deleted = _delete_ids_batched(
+                emb,
+                ids_to_delete,
+                batch_size=batch_size,
+                errors=stats.errors,
+            )
+
+        if rows_to_upsert:
+            _upsert_rows_batched(
+                emb,
+                rows_to_upsert,
+                batch_size=batch_size,
+                use_initial_index=not loaded_existing,
+                progress=progress,
+            )
+            stats.chunks_written = len(rows_to_upsert)
 
         emb.save(str(index_path))
+        for key, content_hash, chunk_ids in file_updates:
+            manifest.set_file(key, content_hash=content_hash, chunk_ids=chunk_ids)
+        save_manifest(manifest)
     finally:
         emb.close()
 
@@ -225,7 +533,7 @@ def search_chunks(query: str, limit: int) -> list[dict]:
         return []
 
     path = txtai_index_path()
-    emb = Embeddings()
+    emb = Embeddings(embeddings_config())
     try:
         emb.load(str(path))
         return format_search_results(emb.search(q, limit))

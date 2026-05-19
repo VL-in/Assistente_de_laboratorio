@@ -166,14 +166,14 @@ Pasta de projetos → inventário (scan) → extração de texto → chunking �
 | Etapa | Onde na UI | Detalhe técnico |
 |-------|------------|-----------------|
 | Inventário | Fontes e inventário | `projects_loader.py` — extensões filtráveis na barra lateral |
-| Extração | Indexação RAG | `rag/extract.py` — docx, xlsx, pdf, txt, md, csv |
+| Extração | Indexação RAG | `rag/extract.py` — docx (**parágrafos + tabelas**), xlsx, pdf, txt, md, csv |
 | Chunking | Indexação RAG | `rag/chunking.py` — padrão ~520 caracteres, sobreposição 80 |
 | Índice | Indexação RAG | `rag/index_txtai.py` — modelo `sentence-transformers/paraphrase-multilingual-mpnet-base-v2` |
 | Busca | Teste RAG / Chat | Similaridade semântica; trechos citam projeto e arquivo |
 
 **Primeira indexação:** na aba **Indexação RAG**, use **Substituir índice existente** (recomendado). A primeira execução pode demorar vários minutos (download do modelo de embeddings).
 
-**Reindexação incremental:** desmarque *Substituir* apenas se souber que quer **acrescentar ou atualizar** chunks no índice já salvo (mesmo `id` de chunk é atualizado, não duplicado).
+**Reindexação incremental:** desmarque *Substituir índice existente* para processar só arquivos **novos, alterados ou removidos** (comparação por SHA-256 e manifesto em `/data/txtai/index_manifest.json`). Arquivos inalterados são pulados. Na primeira vez após atualizar o app, use *Substituir* uma vez ou aceite um ciclo incremental para alinhar o manifesto.
 
 **Chat com RAG:** na aba **Chat**, ative **Usar RAG (txtai)** depois que o índice estiver pronto (aba Diagnóstico mostra *Índice pronto: sim*).
 
