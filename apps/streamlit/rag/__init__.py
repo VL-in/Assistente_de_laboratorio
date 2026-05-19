@@ -8,6 +8,7 @@ from .index_txtai import (
     index_mtime,
     index_ready,
     search_chunks,
+    search_with_backend,
 )
 from .manifest import manifest_exists, manifest_path
 from .paths import ENV_TXTAI_DIR, txtai_data_root, txtai_index_path
@@ -23,6 +24,7 @@ __all__ = [
     "manifest_exists",
     "manifest_path",
     "search_chunks",
+    "search_with_backend",
     "txtai_data_root",
     "txtai_index_path",
 ]

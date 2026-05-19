@@ -28,6 +28,14 @@ def chunk_text(text: str, *, max_chars: int, overlap: int) -> list[str]:
     n = len(cleaned)
     while start < n:
         end = min(start + max_chars, n)
+        # Recua até a última quebra de palavra para não cortar no meio de um token.
+        # Busca somente na segunda metade do chunk para evitar pedaços muito pequenos.
+        if end < n:
+            boundary = cleaned.rfind(" ", start + max_chars // 2, end)
+            if boundary == -1:
+                boundary = cleaned.rfind("\n", start + max_chars // 2, end)
+            if boundary > start:
+                end = boundary + 1  # inclui o delimitador; .strip() remove depois
         piece = cleaned[start:end].strip()
         if piece:
             chunks.append(piece)
