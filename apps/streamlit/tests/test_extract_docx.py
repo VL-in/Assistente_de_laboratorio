@@ -42,6 +42,28 @@ class ExtractDocxTests(unittest.TestCase):
             self.assertIn("31/12/2026", outcome.text)
             self.assertIn("tabela", outcome.detail.lower())
 
+    def test_nested_table_in_cell(self) -> None:
+        from docx import Document
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "nested.docx"
+            doc = Document()
+            outer = doc.add_table(rows=1, cols=1)
+            cell = outer.rows[0].cells[0]
+            cell.text = "Reagente principal"
+            inner = cell.add_table(rows=2, cols=2)
+            inner.rows[0].cells[0].text = "Lote"
+            inner.rows[0].cells[1].text = "Validade"
+            inner.rows[1].cells[0].text = "L-99"
+            inner.rows[1].cells[1].text = "01/06/2027"
+            doc.save(str(path))
+
+            outcome = _extract_docx(path, max_chars_total=500_000)
+            self.assertTrue(outcome.ok, outcome.detail)
+            self.assertIn("Reagente principal", outcome.text)
+            self.assertIn("L-99", outcome.text)
+            self.assertIn("01/06/2027", outcome.text)
+
 
 if __name__ == "__main__":
     unittest.main()
