@@ -38,10 +38,10 @@ from rag import (
     index_ready,
     manifest_exists,
     manifest_path,
+    search_with_backend,
     txtai_data_root,
     txtai_index_path,
 )
-from rag.index_txtai import search_with_backend
 
 load_dotenv()
 
@@ -192,6 +192,21 @@ def _check_openai_compatible_models(base_url: str, *, timeout_s: float = 5.0) ->
         if _is_timeout_error(e):
             return False, f"Tempo esgotado ({timeout_s}s), favor atualize a página e tente novamente."
         return False, str(e)
+
+
+def _trim_chat_history(messages: list[dict], max_turns: int) -> list[dict]:
+    """
+    Mantém os últimos ``max_turns`` pares (user + assistant) do histórico.
+
+    Sem truncagem, o prompt cresce indefinidamente e pode ultrapassar a janela
+    de contexto do modelo — causando respostas truncadas ou erros silenciosos.
+    """
+    if max_turns <= 0:
+        return []
+    max_msgs = max_turns * 2  # cada turno = 1 mensagem do usuário + 1 do assistente
+    if len(messages) <= max_msgs:
+        return messages
+    return messages[-max_msgs:]
 
 
 def _render_sidebar() -> None:
@@ -564,7 +579,7 @@ def _tab_rag_dev() -> None:
             else:
                 st.metric("Resultados", len(hits))
                 for i, h in enumerate(hits, start=1):
-                    score = h.get("score", h.get("similarity"))
+                    score = h.get("score")
                     body = (h.get("text") or "").strip()
                     title = f"#{i} · score={score}"
                     with st.expander(title, expanded=(i <= 3)):
@@ -594,7 +609,7 @@ def _tab_chat() -> None:
     if "chat_messages" not in st.session_state:
         st.session_state.chat_messages = []
 
-    r1, r2, r3 = st.columns([2, 1, 2])
+    r1, r2, r3, r4 = st.columns([3, 1, 2, 2])
     with r1:
         use_rag = st.toggle(
             "Usar RAG (txtai)",
@@ -613,7 +628,30 @@ def _tab_chat() -> None:
             disabled=not use_rag,
         )
     with r3:
+        max_tokens = st.number_input(
+            "Max. tokens (resposta)",
+            min_value=128,
+            max_value=8192,
+            value=1024,
+            step=128,
+            key="chat_max_tokens",
+            help="Limite de tokens gerados pelo modelo. Evita respostas truncadas em modelos com default conservador.",
+        )
+    with r4:
         use_stream = st.toggle("Resposta em streaming", value=True, key="chat_use_stream")
+
+    col_hist, _ = st.columns([2, 3])
+    with col_hist:
+        max_history_turns = st.number_input(
+            "Turnos no histórico enviado ao modelo",
+            min_value=1,
+            max_value=30,
+            value=8,
+            step=1,
+            key="chat_max_history_turns",
+            help="Limita quantos pares de mensagens (user + assistente) são incluídos no prompt. "
+                 "Reduz o tamanho total do contexto enviado e evita exceder a janela do modelo.",
+        )
 
     if use_rag and not index_ready():
         st.warning("Índice txtai indisponível. Construa em **Indexação RAG** ou desative o RAG.")
@@ -652,10 +690,13 @@ def _tab_chat() -> None:
                     "não invente dados de ensaios.)"
                 )
 
+        history_trimmed = _trim_chat_history(
+            st.session_state.chat_messages, int(max_history_turns)
+        )
         api_messages = [{"role": "system", "content": system_prompt}]
         api_messages += [
             {"role": m["role"], "content": m["content"]}
-            for m in st.session_state.chat_messages
+            for m in history_trimmed
         ]
 
         with st.chat_message("assistant"):
@@ -664,6 +705,7 @@ def _tab_chat() -> None:
                     stream = client.chat.completions.create(
                         model=model,
                         messages=api_messages,
+                        max_tokens=int(max_tokens),
                         stream=True,
                     )
 
@@ -684,6 +726,7 @@ def _tab_chat() -> None:
                         completion = client.chat.completions.create(
                             model=model,
                             messages=api_messages,
+                            max_tokens=int(max_tokens),
                             stream=False,
                         )
                     text = (completion.choices[0].message.content or "").strip()

@@ -195,14 +195,15 @@ def _extract_pdf(path: Path, *, max_chars_total: int) -> ExtractOutcome:
 
 def _extract_plain(path: Path, *, max_chars_total: int) -> ExtractOutcome:
     raw = path.read_bytes()
+    # latin-1 aceita todos os 256 valores de byte, então o loop sempre termina
+    # com break — não há necessidade de fallback adicional.
+    text = ""
     for enc in ("utf-8", "utf-8-sig", "latin-1"):
         try:
             text = raw.decode(enc)
             break
         except UnicodeDecodeError:
-            text = ""
-    else:
-        text = raw.decode("utf-8", errors="replace")
+            continue
     text = text.strip()
     text, cut = _truncate(text, max_chars_total)
     detail = "texto plano"

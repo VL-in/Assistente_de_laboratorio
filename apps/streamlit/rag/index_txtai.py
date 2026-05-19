@@ -295,26 +295,17 @@ def build_index(
         return stats
 
     emb = Embeddings(embeddings_config())
-    append_mode = not replace_existing and index_ready()
 
     try:
-        if append_mode:
-            emb.load(str(index_path))
-            _upsert_rows_batched(
-                emb,
-                rows,
-                batch_size=batch_size,
-                use_initial_index=False,
-                progress=progress,
-            )
-        else:
-            _upsert_rows_batched(
-                emb,
-                rows,
-                batch_size=batch_size,
-                use_initial_index=True,
-                progress=progress,
-            )
+        # Fluxo não-incremental: sempre constrói índice do zero (sem carregar o
+        # índice existente), evitando duplicação de chunks em execuções repetidas.
+        _upsert_rows_batched(
+            emb,
+            rows,
+            batch_size=batch_size,
+            use_initial_index=True,
+            progress=progress,
+        )
         chunk_sig = chunking_signature(max_chars, overlap, max_doc_chars)
         manifest = IndexManifest(
             embedding_model=EMBEDDING_MODEL_ID,
@@ -495,7 +486,21 @@ def _build_index_incremental(
 
 
 def index_mtime() -> float:
-    """Timestamp do índice salvo (para cache do Streamlit); 0 se inexistente."""
+    """
+    Timestamp do índice salvo (para cache do Streamlit); 0 se inexistente.
+
+    Usa o manifesto como referência primária porque, no Windows, o mtime de um
+    diretório nem sempre é atualizado quando arquivos internos mudam. O manifesto
+    é sempre escrito por último após ``emb.save()``, tornando seu mtime confiável.
+    """
+    from .manifest import manifest_path
+
+    mp = manifest_path()
+    if mp.is_file():
+        try:
+            return mp.stat().st_mtime
+        except OSError:
+            pass
     p = txtai_index_path()
     if not p.exists() or not p.is_dir():
         return 0.0
