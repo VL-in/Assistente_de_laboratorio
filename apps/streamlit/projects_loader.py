@@ -98,6 +98,9 @@ def _iter_files_recursive(
 ) -> Iterable[Path]:
     for dirpath, _dirnames, filenames in os.walk(project_root, onerror=_walk_on_error):
         for name in filenames:
+            # Ignora temporários do Office (~$arquivo.docx) e ocultos.
+            if name.startswith("~$") or name.startswith("."):
+                continue
             p = Path(dirpath, name)
             if not p.is_file():
                 continue
@@ -195,7 +198,8 @@ def scans_to_flat_records(scans: list[ProjectScan]) -> list[dict]:
     return rows
 
 
-def _file_sha256(path: Path, *, chunk_size: int) -> str:
+def compute_file_sha256(path: Path, *, chunk_size: int = 1024 * 1024) -> str:
+    """Hash SHA-256 do conteúdo do arquivo (usado na reindexação incremental)."""
     h = hashlib.sha256()
     with path.open("rb") as fh:
         while True:
@@ -204,6 +208,10 @@ def _file_sha256(path: Path, *, chunk_size: int) -> str:
                 break
             h.update(chunk)
     return h.hexdigest()
+
+
+def _file_sha256(path: Path, *, chunk_size: int) -> str:
+    return compute_file_sha256(path, chunk_size=chunk_size)
 
 
 def validate_projetos_root(path: Path) -> tuple[bool, str]:

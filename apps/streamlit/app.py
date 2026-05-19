@@ -36,6 +36,8 @@ from rag import (
     format_context_for_llm,
     index_mtime,
     index_ready,
+    manifest_exists,
+    manifest_path,
     txtai_data_root,
     txtai_index_path,
 )
@@ -137,7 +139,9 @@ def _txtai_backend_cached(mtime_key: float):
         return None
     from txtai import Embeddings
 
-    emb = Embeddings()
+    from rag.index_txtai import embeddings_config
+
+    emb = Embeddings(embeddings_config())
     emb.load(str(txtai_index_path()))
     return emb
 
@@ -204,9 +208,10 @@ def _render_sidebar() -> None:
         help="Vazio = ASSISTENTE_PROJETOS_DIR ou padrão do ambiente/Docker.",
     )
     st.sidebar.checkbox(
-        "Calcular SHA-256 (versionamento)",
+        "Calcular SHA-256 no escaneamento",
         key="compute_hashes",
-        help="Útil para reindexação incremental; pode ser lento.",
+        value=True,
+        help="Acelera a indexação incremental (compara hash sem reler o arquivo). Pode ser lento no escaneamento.",
     )
     st.sidebar.text_input(
         "Extensões (vírgula)",
@@ -366,6 +371,8 @@ def _tab_indexacao_rag(scans: list[ProjectScan] | None) -> None:
     st.markdown(
         f"- **Volume dados txtai:** `{txtai_data_root()}`\n"
         f"- **Índice salvo:** `{txtai_index_path()}`\n"
+        f"- **Manifesto (hash):** `{manifest_path()}` — "
+        f"{'presente' if manifest_exists() else 'ausente'}\n"
         f"- **Índice pronto:** {'sim' if index_ready() else 'não'}"
     )
 
@@ -435,16 +442,24 @@ def _tab_indexacao_rag(scans: list[ProjectScan] | None) -> None:
         help="Evita carregar PDF/planilhas enormes inteiros na memória.",
     )
 
+    replace_default = not index_ready()
     replace = st.checkbox(
         "Substituir índice existente",
-        value=True,
-        help="Remove o diretório do índice anterior antes de gravar o novo.",
+        value=replace_default,
+        help="Apaga índice e manifesto e reconstrói tudo. Desmarque para **reindexação incremental por hash**.",
     )
-    if not replace:
+    if not replace and index_ready():
         st.caption(
-            "Sem substituir, o txtai **acrescenta** ao índice já salvo — pode haver duplicatas. "
-            "Para reindexação limpa, mantenha esta opção marcada."
+            "Modo **incremental**: só arquivos com hash SHA-256 diferente (ou novos/removidos) "
+            "são reprocessados. Após atualização do app que muda a extração de `.docx`, os "
+            "arquivos Word são reindexados automaticamente na próxima execução."
         )
+    elif not replace:
+        st.caption("Primeira indexação: será criado índice e manifesto do zero.")
+    st.caption(
+        "Documentos Word: tabelas de insumos/validade entram na indexação (não só parágrafos). "
+        "Se o índice foi criado antes dessa correção, use **Substituir índice** uma vez."
+    )
 
     status_box = st.empty()
 
@@ -465,11 +480,26 @@ def _tab_indexacao_rag(scans: list[ProjectScan] | None) -> None:
             )
         _txtai_backend_cached.clear()
         st.session_state["last_index_stats"] = stats
-        st.success(
-            f"Chunks gravados: **{stats.chunks_written}** · "
-            f"Arquivos com texto: **{stats.files_extracted}** · "
-            f"Vazios / ignorados: **{stats.files_empty}**"
-        )
+        if stats.incremental:
+            st.success(
+                f"**Incremental** — chunks gravados: **{stats.chunks_written}** · "
+                f"removidos: **{stats.chunks_deleted}** · "
+                f"reindexados: **{stats.files_reindexed}** · "
+                f"inalterados (pulados): **{stats.files_skipped_unchanged}** · "
+                f"arquivos removidos do disco: **{stats.files_removed}** · "
+                f"vazios/erro: **{stats.files_empty}**"
+            )
+        else:
+            st.success(
+                f"Chunks gravados: **{stats.chunks_written}** · "
+                f"Arquivos com texto: **{stats.files_extracted}** · "
+                f"Vazios / ignorados: **{stats.files_empty}**"
+            )
+        if stats.incremental and not stats.chunks_written and not stats.chunks_deleted:
+            st.info(
+                "Nenhuma alteração detectada — todos os arquivos do inventário "
+                "coincidem com o manifesto (hash SHA-256)."
+            )
         if stats.errors:
             with st.expander("Avisos e erros (detalhe)"):
                 st.code("\n".join(stats.errors[:200]), language="text")
@@ -479,10 +509,17 @@ def _tab_indexacao_rag(scans: list[ProjectScan] | None) -> None:
 
     prev = st.session_state.get("last_index_stats")
     if prev:
-        st.info(
-            f"Última execução nesta sessão: **{prev.chunks_written}** chunks · "
-            f"{prev.files_extracted} arquivos com texto · {prev.files_empty} vazios."
-        )
+        if getattr(prev, "incremental", False):
+            st.info(
+                f"Última execução (incremental): **{prev.chunks_written}** chunks novos · "
+                f"**{prev.files_skipped_unchanged}** inalterados · "
+                f"**{prev.files_reindexed}** reindexados."
+            )
+        else:
+            st.info(
+                f"Última execução nesta sessão: **{prev.chunks_written}** chunks · "
+                f"{prev.files_extracted} arquivos com texto · {prev.files_empty} vazios."
+            )
 
     with st.expander("Metadados por chunk (campos armazenados com o texto)"):
         st.json(
@@ -654,8 +691,15 @@ def _tab_chat() -> None:
                     st.session_state.chat_messages.append({"role": "assistant", "content": text})
             except Exception as exc:
                 st.error(f"Erro ao chamar o LM Studio: {exc}")
-                st.session_state.chat_messages.pop()
-                st.caption("A última mensagem sua foi removida do histórico; ajuste o servidor ou o modelo e tente de novo.")
+                if (
+                    st.session_state.chat_messages
+                    and st.session_state.chat_messages[-1].get("role") == "user"
+                ):
+                    st.session_state.chat_messages.pop()
+                st.caption(
+                    "A última mensagem sua foi removida do histórico; "
+                    "ajuste o servidor ou o modelo e tente de novo."
+                )
 
 
 def _tab_olap() -> None:

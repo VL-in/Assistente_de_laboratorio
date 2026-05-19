@@ -13,7 +13,7 @@ todos:
     status: in_progress
   - id: rag-chat-citacoes
     content: Pipeline txtai (embeddings + índice + RAG) e chat na UI com citações via LM Studio
-    status: pending
+    status: in_progress
   - id: seguranca-estabilizacao
     content: Aplicar RBAC, auditoria, guardrails e testes integrados
     status: pending
@@ -26,15 +26,38 @@ isProject: false
 
 Registro factual do que já existe no repositório **sem alterar** a arquitetura-alvo (Docker + Streamlit + txtai + DuckDB + LM Studio no host). Atualizar este bloco a cada marco entregue.
 
+**Última sincronização:** 2026-05-18 (reindexação incremental por hash + revisão RAG).
+
 | Marco | Estado | Evidência no código / artefatos |
 |--------|--------|----------------------------------|
 | Runtime Docker + Compose | Entregue | `docker-compose.yml`, `docker/streamlit/Dockerfile`, volumes `/data/projetos` (bind RO), `/data/txtai`, `/data/duckdb`, `/data/sqlite`, `extra_hosts` para `host.docker.internal`, `restart: unless-stopped`, `PYTHONUNBUFFERED` |
 | HEALTHCHECK da imagem | Entregue | `Dockerfile`: GET HTTP `/_stcore/health` na porta do Streamlit (8502) |
-| UI Streamlit (abas) | Entregue | `apps/streamlit/app.py`: Início, Fontes e inventário, Indexação RAG (placeholder), Chat (placeholder), OLAP (placeholder), Diagnóstico (runtime + teste GET `/v1/models`) |
-| Inventário segmentado por projeto | Entregue | `apps/streamlit/projects_loader.py`: um subdiretório de primeiro nível = um `project_id`; varredura recursiva; hash SHA-256 opcional; tolerância a `OSError` em stat/hash/walk |
-| Parsing docx/xlsx, txtai, DuckDB na UI, auth web | Pendente | Conforme Fases 1–4 abaixo |
+| UI Streamlit (layout + abas) | Entregue | `apps/streamlit/app.py`: Início, Fontes e inventário, Indexação RAG, Teste RAG (dev), Chat, OLAP, Diagnóstico |
+| Inventário segmentado por projeto | Entregue | `apps/streamlit/projects_loader.py`: um subdiretório de primeiro nível = um `project_id`; varredura recursiva; hash SHA-256 opcional no scan; tolerância a `OSError` em stat/hash/walk |
+| Parsing documental (docx, planilhas, etc.) | Entregue | `apps/streamlit/rag/extract.py`: `.docx`, `.xlsx`, `.xlsm`, `.pdf`, `.txt`, `.md`, `.csv` |
+| Pipeline txtai (chunking + índice + busca) | Entregue | `apps/streamlit/rag/chunking.py`, `rag/index_txtai.py`, `rag/paths.py`; modelo `sentence-transformers/paraphrase-multilingual-mpnet-base-v2`; persistência em `/data/txtai` |
+| Chat + RAG + LM Studio | Em validação | `app.py`: cliente OpenAI → LM Studio; toggle **Usar RAG (txtai)**; `format_context_for_llm`; streaming; aba **Teste RAG (dev)** para inspecionar retrieval sem LLM |
+| Reindexação incremental por hash de arquivo | Entregue | `rag/manifest.json` + `build_index` incremental: compara SHA-256, `delete` de chunks obsoletos, `upsert` só em arquivos novos/alterados/removidos; UI com “Substituir índice” desmarcado |
+| DuckDB na UI | Pendente | Volume `/data/duckdb` no Compose; aba OLAP ainda placeholder (`st.info` na Fase 1/2) |
+| Metadados / auditoria (SQLite ou Postgres) | Pendente | Volume `/data/sqlite` no Compose; sem schema, migrações ou trilha no código |
+| Autenticação web | Pendente | Conforme Fase 1 |
+| RBAC, guardrails, testes integrados E2E | Pendente | Conforme Fase 4 |
 
 **Porta do Streamlit (MVP atual):** `8502` (host e contêiner), configurável por `STREAMLIT_PORT` no `.env` do Compose.
+
+### Situação por fase (estimativa, escopo inalterado)
+
+| Fase | Progresso | Observação |
+|------|-----------|------------|
+| 0 — Preparação | ~100% | Stack e paths de volume definidos; `README.md` documenta LM Studio no Docker |
+| 1 — Fundação | ~65–70% | Docker, UI, diagnóstico, chat LM Studio ok; faltam DuckDB “olá mundo”, SQLite/auditoria, auth |
+| 2 — Ingestão e parsing | ~70% | Scan + parsers + stats na indexação; falta status de ingestão dedicado e incremental por hash |
+| 3 — RAG local | ~75–80% | Fluxo escanear → indexar → buscar → chat com RAG implementado; critério >90% casos curados e guardrails em código em aberto |
+| 4 — Segurança | 0% | Não iniciada |
+
+**Demo atual possível:** escanear projetos → construir índice → **Teste RAG** → **Chat** com RAG (LM Studio no host). **Uso interno “seguro” do playbook** ainda exige Fase 1 (login, auditoria) e Fase 4.
+
+**`apps/api` (FastAPI):** opcional, fora do caminho crítico do MVP (alinhado à nota de arquitetura abaixo).
 
 ## Objetivo
 Construir uma **aplicação web** (não desktop), **containerizada em Docker**, para análise documental (`docx`, `xlsx`, `xlsm`) com **RAG local**, **OLAP** e chat com citações, iniciando simples e evoluindo com segurança. O mesmo produto segue **orientado a dados e modelo locais** (pastas montadas em volume, LM Studio no host); a UI e o pipeline rodam no contêiner.
@@ -84,57 +107,63 @@ flowchart LR
 ## Fase 0 - Preparação (2-3 dias)
 - Definir baseline técnico e de segurança.
 - Entregáveis:
-  - decisão da stack final (congelada para MVP): **Docker + Streamlit + txtai + DuckDB + LM Studio (host)**
+  - decisão da stack final (congelada para MVP): **Docker + Streamlit + txtai + DuckDB + LM Studio (host)** — **feito**
   - convenção de versionamento e branches
-  - checklist de segurança inicial (segredos via env/compose, logs, volumes)
-  - **LM Studio**: modelo de chat carregado; URL base e nome do modelo; se embeddings forem pelo LM Studio, validar `POST /v1/embeddings`; validar `GET /v1/models` **de dentro do contêiner** (rede até `host.docker.internal` ou equivalente no Linux).
-  - convenção de **paths em volume** (ingestão, índice txtai, `.duckdb`, SQLite de auditoria).
+  - checklist de segurança inicial (segredos via env/compose, logs, volumes) — **parcial** (`.env.docker.example`, volumes; auditoria formal na Fase 4)
+  - **LM Studio**: modelo de chat carregado; URL base e nome do modelo; se embeddings forem pelo LM Studio, validar `POST /v1/embeddings`; validar `GET /v1/models` **de dentro do contêiner** (rede até `host.docker.internal` ou equivalente no Linux) — **feito** na aba Diagnóstico + `README.md` (embeddings do MVP via txtai, não LM Studio)
+  - convenção de **paths em volume** (ingestão, índice txtai, `.duckdb`, SQLite de auditoria) — **feito** no Compose
 - Critério de pronto:
-  - arquitetura e escopo v1 aprovados
+  - arquitetura e escopo v1 aprovados — **atendido**
 
 ## Fase 1 - Fundação (Semana 1-2)
 - Subir estrutura de projeto e **runtime containerizado**.
 - Entregáveis:
-  - **`docker-compose.yml`** + **`Dockerfile`** (imagem enxuta quando possível; usuário não-root; porta Streamlit exposta — no repositório atual: **8502**, via `STREAMLIT_PORT`)
-  - app **Streamlit** inicial: layout base, página de **diagnóstico** (versão, paths de volume, teste de conectividade ao LM Studio com timeouts e mensagem clara se indisponível)
-  - fluxo mínimo **Streamlit → cliente OpenAI** → LM Studio (`LLM_BASE_URL`, streaming se suportado)
-  - **DuckDB** “olá mundo”: conexão a arquivo em volume + uma consulta/agregação de exemplo na UI
-  - banco de **metadados/auditoria** inicial + migrações (Postgres ou SQLite em volume)
-  - log estruturado e trilha de auditoria base
-  - **autenticação web** inicial (equivalente ao login do blueprint: ex. `streamlit-authenticator` ou camada atrás de reverse proxy — escolher e documentar na Fase 0)
+  - **`docker-compose.yml`** + **`Dockerfile`** (imagem enxuta quando possível; usuário não-root; porta Streamlit exposta — no repositório atual: **8502**, via `STREAMLIT_PORT`) — **feito**
+  - app **Streamlit** inicial: layout base, página de **diagnóstico** (versão, paths de volume, teste de conectividade ao LM Studio com timeouts e mensagem clara se indisponível) — **feito** (inclui status do índice txtai)
+  - fluxo mínimo **Streamlit → cliente OpenAI** → LM Studio (`LLM_BASE_URL`, streaming se suportado) — **feito** (aba Chat)
+  - **DuckDB** “olá mundo”: conexão a arquivo em volume + uma consulta/agregação de exemplo na UI — **pendente**
+  - banco de **metadados/auditoria** inicial + migrações (Postgres ou SQLite em volume) — **pendente**
+  - log estruturado e trilha de auditoria base — **pendente**
+  - **autenticação web** inicial (equivalente ao login do blueprint: ex. `streamlit-authenticator` ou camada atrás de reverse proxy — escolher e documentar na Fase 0) — **pendente**
 - Critério de pronto:
-  - `docker compose up` sobe a UI; usuário autentica (ou fluxo definido); LM Studio e DuckDB verificáveis pela interface de diagnóstico
+  - `docker compose up` sobe a UI; usuário autentica (ou fluxo definido); LM Studio e DuckDB verificáveis pela interface de diagnóstico — **parcial** (UI + LM Studio ok; auth e DuckDB não)
 
 ## Fase 2 - Ingestão e parsing (Semana 3-4)
 - Implementar pipeline documental (código chamado pelo Streamlit ou módulos importados por ele).
 - Entregáveis:
-  - scanner de diretório recursivo (path = volume montado)
-  - parser de `docx`, `xlsx`, `xlsm`
-  - hash/versionamento para detectar alterações
-  - **página Streamlit** de status da ingestão (progresso, erros, último hash)
-  - (opcional nesta fase) materialização de tabelas/resumos para **DuckDB** a partir da extração (prepara OLAP na Fase 3/4)
+  - scanner de diretório recursivo (path = volume montado) — **feito** (`projects_loader.py`, aba Fontes)
+  - parser de `docx`, `xlsx`, `xlsm` — **feito** (`rag/extract.py`; também pdf, txt, md, csv)
+  - hash/versionamento para detectar alterações — **feito** (SHA-256 no scan ou na indexação; manifesto `index_manifest.json`)
+  - **página Streamlit** de status da ingestão (progresso, erros, último hash) — **parcial** (stats incremental na Indexação RAG; sem página dedicada por arquivo)
+  - (opcional nesta fase) materialização de tabelas/resumos para **DuckDB** a partir da extração (prepara OLAP na Fase 3/4) — **pendente**
 - Critério de pronto:
-  - novos arquivos entram no pipeline sem duplicação
+  - novos arquivos entram no pipeline sem duplicação — **feito** (modo incremental por hash + manifesto; rebuild completo com “Substituir índice”)
 
 ## Fase 3 - RAG local (Semana 5-6)
 - Construir recuperação semântica + chat com **txtai** e geração via **LM Studio**.
 - Entregáveis:
-  - chunking com metadados de origem (arquivo, aba, seção) compatíveis com o índice txtai
-  - **txtai**: embeddings, persistência do índice em volume, pipeline de retrieval + prompt com **citações**
-  - **página de chat** no Streamlit consumindo o pipeline (sem necessidade de endpoint REST próprio)
-  - temperatura / `max_tokens` / truncagem de contexto alinhados ao modelo no LM Studio e à janela de contexto
+  - chunking com metadados de origem (arquivo, aba, seção) compatíveis com o índice txtai — **feito**
+  - **txtai**: embeddings, persistência do índice em volume, pipeline de retrieval + prompt com **citações** — **feito**
+  - **página de chat** no Streamlit consumindo o pipeline (sem necessidade de endpoint REST próprio) — **feito**
+  - temperatura / `max_tokens` / truncagem de contexto alinhados ao modelo no LM Studio e à janela de contexto — **parcial** (truncagem de contexto RAG ~12k caracteres em `format_context_for_llm`; `max_tokens`/temperatura não expostos na UI)
 - Critério de pronto:
-  - respostas com evidência e fonte em >90% dos casos de teste curados
+  - respostas com evidência e fonte em >90% dos casos de teste curados — **pendente** (sem suíte curada nem testes automatizados; instruções no system prompt, sem guardrail em código para “sem fonte”)
 
 ## Fase 4 - Segurança e estabilidade (Semana 7-8)
 - Endurecer operação para uso real interno.
 - Entregáveis:
-  - RBAC simples (admin/revisor/pesquisador), adaptado a **sessão web**
-  - política de logs de auditoria
-  - guardrails de prompt injection e resposta sem evidência
-  - testes de integração ponta a ponta (incluindo subida via Compose e smoke de txtai + DuckDB)
+  - RBAC simples (admin/revisor/pesquisador), adaptado a **sessão web** — **pendente**
+  - política de logs de auditoria — **pendente**
+  - guardrails de prompt injection e resposta sem evidência — **pendente**
+  - testes de integração ponta a ponta (incluindo subida via Compose e smoke de txtai + DuckDB) — **pendente**
 - Critério de pronto:
-  - uso interno validado (dados locais em volume, LM Studio no host) + checklist de segurança atendido
+  - uso interno validado (dados locais em volume, LM Studio no host) + checklist de segurança atendido — **pendente**
+
+## Próximos passos sugeridos (ordem, sem mudar escopo)
+1. Fechar **Fase 1**: DuckDB “olá mundo” na aba OLAP; escolher SQLite; autenticação web; critério de pronto da fase.
+2. Fechar **Fase 2**: ligar `content_hash_sha256` ao `build_index` (reprocessar só arquivos alterados); página de status de ingestão.
+3. Fechar **Fase 3**: suíte de casos curados + métrica de citação válida; guardrail quando RAG vazio.
+4. Executar **Fase 4** conforme entregáveis acima.
 
 ## Ritmo de execução (cadência)
 - Planejamento semanal: definir backlog da semana por prioridade.

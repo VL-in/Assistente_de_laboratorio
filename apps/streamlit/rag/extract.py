@@ -49,18 +49,75 @@ def _truncate(s: str, limit: int) -> tuple[str, bool]:
     return s[:limit], True
 
 
+def _iter_docx_blocks(document: object):
+    """
+    Percorre parágrafos e tabelas na ordem do documento Word.
+
+    ``python-docx`` expõe ``paragraphs`` e ``tables`` separados; insumos e validades
+  costumam estar em **tabelas**, que ficavam de fora na extração antiga.
+    """
+    from docx.oxml.ns import qn
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+
+    body = document.element.body  # type: ignore[attr-defined]
+    for child in body.iterchildren():
+        if child.tag == qn("w:p"):
+            yield Paragraph(child, document)
+        elif child.tag == qn("w:tbl"):
+            yield Table(child, document)
+
+
+def _table_row_cell_texts(row: object) -> list[str]:
+    """Textos das células de uma linha (deduplica células repetidas por merge no Word)."""
+    seen_tc: set[int] = set()
+    texts: list[str] = []
+    for cell in row.cells:  # type: ignore[attr-defined]
+        tc_id = id(cell._tc)
+        if tc_id in seen_tc:
+            continue
+        seen_tc.add(tc_id)
+        t = (cell.text or "").strip().replace("\n", " ")
+        texts.append(t)
+    return texts
+
+
+def _table_to_lines(table: object) -> list[str]:
+    lines: list[str] = []
+    for row in table.rows:  # type: ignore[attr-defined]
+        cells = _table_row_cell_texts(row)
+        line = "\t".join(cells).strip()
+        if line:
+            lines.append(line)
+    return lines
+
+
 def _extract_docx(path: Path, *, max_chars_total: int) -> ExtractOutcome:
     from docx import Document
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
 
     doc = Document(str(path))
     parts: list[str] = []
-    for para in doc.paragraphs:
-        t = (para.text or "").strip()
-        if t:
-            parts.append(t)
+    n_tables = 0
+    n_paras = 0
+
+    for block in _iter_docx_blocks(doc):
+        if isinstance(block, Paragraph):
+            t = (block.text or "").strip()
+            if t:
+                parts.append(t)
+                n_paras += 1
+        elif isinstance(block, Table):
+            table_lines = _table_to_lines(block)
+            if table_lines:
+                parts.append("### Tabela de insumos / materiais")
+                parts.extend(table_lines)
+                n_tables += 1
+
     text = "\n".join(parts)
     text, cut = _truncate(text, max_chars_total)
-    detail = "docx: parágrafos"
+    detail = f"docx: {n_paras} parágrafo(s), {n_tables} tabela(s)"
     if cut:
         detail += f" (truncado a {max_chars_total} caracteres)"
     return ExtractOutcome(text=text, detail=detail, ok=bool(text))
@@ -105,12 +162,14 @@ def _extract_excel(path: Path, *, max_chars_total: int) -> ExtractOutcome:
     finally:
         wb.close()
 
-    text = "\n".join(lines)
+    text = "\n".join(lines).strip()
     text, extra_cut = _truncate(text, max_chars_total)
     detail = "xlsx: abas e linhas"
     if extra_cut:
         detail += f" (truncado a {max_chars_total} caracteres)"
-    return ExtractOutcome(text=text, detail=detail, ok=bool(text))
+    if not text:
+        return ExtractOutcome(text="", detail="xlsx: sem células com conteúdo", ok=False)
+    return ExtractOutcome(text=text, detail=detail, ok=True)
 
 
 def _extract_pdf(path: Path, *, max_chars_total: int) -> ExtractOutcome:
@@ -169,5 +228,9 @@ def _extract_csv(path: Path, *, max_chars_total: int) -> ExtractOutcome:
             if remaining <= 0:
                 lines.append("(… truncado por limite global …)")
                 break
-    text = "\n".join(lines)
-    return ExtractOutcome(text=text, detail="csv", ok=bool(text))
+    text = "\n".join(lines).strip()
+    text, cut = _truncate(text, max_chars_total)
+    detail = "csv"
+    if cut:
+        detail += f" (truncado a {max_chars_total} caracteres)"
+    return ExtractOutcome(text=text, detail=detail, ok=bool(text))
