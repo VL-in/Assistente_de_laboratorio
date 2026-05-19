@@ -1,4 +1,28 @@
-"""Construção e consulta do índice txtai com sentence-transformers."""
+"""
+Construção e consulta do índice de embeddings txtai.
+
+Este módulo é o núcleo do pipeline RAG. Ele expõe dois grupos de funções:
+
+Indexação (``build_index``)
+    Ponto de entrada único para criar ou atualizar o índice. Decide
+    automaticamente entre três fluxos:
+    - **Reconstrução total** (``replace_existing=True``): apaga tudo e indexa
+      do zero. Usado quando o modelo ou a lógica de extração muda.
+    - **Indexação incremental** (índice existente + ``replace_existing=False``):
+      compara SHA-256 de cada arquivo com o manifesto; processa apenas
+      arquivos novos, alterados ou removidos.
+    - **Primeira indexação** (sem índice em disco): equivalente à reconstrução
+      total, mas sem necessidade de apagar nada.
+
+Busca semântica (``search_chunks``, ``search_with_backend``)
+    ``search_chunks`` abre e fecha o índice a cada chamada — adequado para
+    scripts e testes isolados. ``search_with_backend`` recebe uma instância
+    já carregada (cache do Streamlit), evitando recarregar o modelo a cada
+    pergunta do usuário.
+
+Formatação de contexto (``format_context_for_llm``)
+    Monta o bloco de contexto citável injetado no system prompt do chat.
+"""
 
 from __future__ import annotations
 
@@ -24,34 +48,65 @@ from .manifest import (
 )
 from .paths import ensure_txtai_parent_exists, txtai_index_path
 
-# Modelo fixo do MVP (multilingual, ~768 dim; max 128 tokens — ver chunking na UI).
+
+# ── Configuração do modelo ───────────────────────────────────────────────────
+
+# Modelo multilingual do MVP (~768 dimensões, max 128 tokens por entrada).
+# Troca de modelo invalida o índice existente — use "Substituir índice" na UI.
 EMBEDDING_MODEL_ID = "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"
 
+# Alias de tipo: tupla (id_do_chunk, dicionário_de_metadados)
 Row = tuple[str, dict]
 
 
 def embeddings_config() -> dict:
+    """
+    Retorna a configuração passada ao construtor ``txtai.Embeddings``.
+
+    ``content=True`` instrui o txtai a armazenar o texto e os metadados junto
+    ao vetor no índice. Sem isso, ``search()`` retornaria apenas ``(id, score)``
+    e não seria possível montar o contexto com trechos citáveis para o LLM.
+    """
     return {
         "path": EMBEDDING_MODEL_ID,
         "content": True,
     }
 
 
-def index_ready() -> bool:
-    """True se já existe um índice salvo em disco."""
-    p = txtai_index_path()
-    if not p.exists() or not p.is_dir():
-        return False
-    return any(p.iterdir())
-
-
-def chunk_uid(sf: ScannedFile, chunk_index: int) -> str:
-    raw = f"{sf.project_id}\x00{sf.relative_path}\x00{chunk_index}".encode("utf-8")
-    return hashlib.sha256(raw).hexdigest()
-
+# ── Tipos e estatísticas ─────────────────────────────────────────────────────
 
 @dataclass
 class BuildStats:
+    """
+    Contadores de resultado de uma execução de ``build_index``.
+
+    Atributos
+    ---------
+    files_total:
+        Total de arquivos no inventário filtrado.
+    files_extracted:
+        Arquivos dos quais texto foi extraído com sucesso.
+    files_empty:
+        Arquivos sem texto extraível (vazios, imagens, formato não suportado).
+    files_skipped_unchanged:
+        Arquivos cujo SHA-256 e parâmetros de chunking coincidem com o
+        manifesto — nenhuma operação no índice foi necessária.
+    files_reindexed:
+        Arquivos processados no modo incremental por terem mudado (hash,
+        versão de extração ou parâmetros de chunking diferentes).
+    files_removed:
+        Arquivos ausentes no disco mas presentes no manifesto (deletados pelo
+        usuário) cujos chunks foram removidos do índice.
+    chunks_written:
+        Número de chunks gravados/atualizados no índice nesta execução.
+    chunks_deleted:
+        Número de chunks removidos do índice (modo incremental).
+    incremental:
+        ``True`` se a execução usou o fluxo incremental.
+    errors:
+        Mensagens de aviso e erro não fatais coletados durante a execução.
+    """
+
     files_total: int = 0
     files_extracted: int = 0
     files_empty: int = 0
@@ -64,11 +119,14 @@ class BuildStats:
     errors: list[str] = field(default_factory=list)
 
 
+# ── Helpers de preparação ────────────────────────────────────────────────────
+
 def _flatten_files(
     scans: list[ProjectScan],
     *,
     project_ids: set[str] | None,
 ) -> list[ScannedFile]:
+    """Agrega todos os ``ScannedFile`` dos scans, opcionalmente filtrando por projeto."""
     out: list[ScannedFile] = []
     for scan in scans:
         if project_ids is not None and scan.project_id not in project_ids:
@@ -79,7 +137,11 @@ def _flatten_files(
 
 def resolve_content_hash(sf: ScannedFile) -> tuple[str | None, str | None]:
     """
-    Retorna ``(hash, erro)`` — hash do scan ou calculado agora; erro se ilegível.
+    Retorna ``(hash_sha256, mensagem_erro)``.
+
+    Usa o hash já calculado no escaneamento quando disponível. Caso contrário,
+    calcula on-demand lendo o arquivo. Retorna ``(None, erro)`` se o arquivo
+    não puder ser lido.
     """
     if sf.content_hash_sha256:
         return sf.content_hash_sha256, None
@@ -87,6 +149,20 @@ def resolve_content_hash(sf: ScannedFile) -> tuple[str | None, str | None]:
         return compute_file_sha256(sf.absolute_path), None
     except OSError as exc:
         return None, str(exc)
+
+
+def chunk_uid(sf: ScannedFile, chunk_index: int) -> str:
+    """
+    Gera um ID determinístico e único para um chunk específico de um arquivo.
+
+    O ID é um SHA-256 de ``project_id + relative_path + chunk_index``,
+    separados por bytes nulos para evitar colisões. Determinismo é essencial
+    para o modo incremental: ao reindexar um arquivo, os IDs dos chunks
+    novos coincidem com os antigos, permitindo substituição precisa via
+    ``delete`` + ``upsert`` sem contaminar o índice.
+    """
+    raw = f"{sf.project_id}\x00{sf.relative_path}\x00{chunk_index}".encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
 
 
 def rows_for_file(
@@ -97,8 +173,14 @@ def rows_for_file(
     max_doc_chars: int,
 ) -> tuple[list[Row], bool, str | None]:
     """
-  Retorna (linhas para txtai, teve_texto, mensagem_erro).
-    ``teve_texto`` False = arquivo vazio ou falha de extração.
+    Extrai texto, faz chunking e monta as linhas prontas para inserção no txtai.
+
+    Retorna
+    -------
+    (rows, teve_texto, mensagem_erro)
+        ``rows``: lista de ``(id, {text, project_id, relative_path, ...})``
+        ``teve_texto``: ``False`` se arquivo vazio ou falha de extração
+        ``mensagem_erro``: aviso descritivo, ou ``None`` se tudo ok
     """
     label = f"{sf.project_id}/{sf.relative_path}"
     outcome = extract_from_scanned_file(sf, max_chars_total=max_doc_chars)
@@ -117,12 +199,19 @@ def rows_for_file(
     rows: list[Row] = []
     for idx, part in enumerate(parts):
         uid = chunk_uid(sf, idx)
+        # O prefixo de citação fica no campo "cited" (exibição / contexto LLM).
+        # O campo "text" contém apenas o conteúdo puro, sem o prefixo.
+        # Separar os dois campos é essencial para a qualidade do embedding:
+        # se o prefixo "[Projeto: X] [Arquivo: Y]" fosse incluído no "text",
+        # todos os chunks teriam um vetor parcialmente idêntico (o prefixo),
+        # o que reduz a discriminação semântica e produz resultados irrelevantes.
         cited = (
             f"[Projeto: {sf.project_id}] [Arquivo: {sf.relative_path}] [Chunk {idx}]\n"
             f"{part}"
         )
         row_dict = {
-            "text": cited,
+            "text": part,    # somente conteúdo → qualidade máxima do embedding
+            "cited": cited,  # texto completo com citação → exibição e contexto LLM
             "project_id": sf.project_id,
             "relative_path": sf.relative_path,
             "chunk_index": idx,
@@ -142,16 +231,20 @@ def prepare_rows(
     max_doc_chars: int,
     progress: Callable[[str], None] | None = None,
 ) -> tuple[list[Row], BuildStats]:
-    """Extrai texto, faz chunking e monta linhas ``(id, {text, ...})`` para o txtai (todos os arquivos)."""
+    """
+    Processa todos os arquivos dos scans e retorna as linhas para indexação.
+
+    Usado no fluxo de reconstrução total (não-incremental). O fluxo incremental
+    usa ``rows_for_file`` diretamente, arquivo a arquivo.
+    """
     stats = BuildStats()
     rows: list[Row] = []
     files = _flatten_files(scans, project_ids=project_ids)
     stats.files_total = len(files)
 
     for sf in files:
-        label = f"{sf.project_id}/{sf.relative_path}"
         if progress:
-            progress(label)
+            progress(f"{sf.project_id}/{sf.relative_path}")
 
         file_rows, had_text, err = rows_for_file(
             sf,
@@ -172,6 +265,8 @@ def prepare_rows(
     return rows, stats
 
 
+# ── Operações no índice txtai ────────────────────────────────────────────────
+
 def _delete_ids_batched(
     emb: object,
     ids: list[str],
@@ -179,7 +274,12 @@ def _delete_ids_batched(
     batch_size: int,
     errors: list[str] | None = None,
 ) -> int:
-    """Remove IDs duplicados e ignora falhas por lote (registra em ``errors``)."""
+    """
+    Remove chunks do índice em lotes, ignorando falhas por lote.
+
+    Deduplica os IDs antes de enviar para evitar erros em operações de deleção
+    que não são idempotentes em certas versões do txtai.
+    """
     if not ids:
         return 0
     unique_ids = list(dict.fromkeys(ids))
@@ -203,6 +303,18 @@ def _upsert_rows_batched(
     use_initial_index: bool,
     progress: Callable[[str], None] | None,
 ) -> None:
+    """
+    Insere ou atualiza chunks no índice em lotes.
+
+    O txtai exige que o **primeiro** lote de uma instância nova use
+    ``Embeddings.index()`` para inicializar as estruturas internas. Lotes
+    subsequentes — incluindo adições a um índice já carregado — devem usar
+    ``Embeddings.upsert()``.
+
+    ``use_initial_index=True`` indica que esta instância de ``Embeddings`` não
+    tem dados ainda; ``False`` indica que o índice foi carregado via ``.load()``
+    e já possui entradas.
+    """
     if not rows:
         return
     n = len(rows)
@@ -221,6 +333,8 @@ def _upsert_rows_batched(
                 progress(f"indexando… {min(i + 1, n)}/{n} chunks")
 
 
+# ── Ponto de entrada: build_index ────────────────────────────────────────────
+
 def build_index(
     scans: list[ProjectScan],
     *,
@@ -234,12 +348,25 @@ def build_index(
     progress: Callable[[str], None] | None = None,
 ) -> BuildStats:
     """
-    Cria ou atualiza embeddings txtai em ``txtai_index_path()``.
+    Cria ou atualiza o índice de embeddings em ``txtai_index_path()``.
 
-    - ``replace_existing=True``: apaga índice + manifesto e reconstrói tudo.
-    - ``replace_existing=False`` e índice existente: reindexação **incremental por hash**
-      (pula arquivos inalterados; remove chunks de arquivos apagados; atualiza alterados).
-    - ``replace_existing=False`` sem índice: indexação completa inicial.
+    Fluxo de decisão
+    ----------------
+    ``replace_existing=True``
+        Apaga o índice e o manifesto e reconstrói tudo do zero. Necessário
+        quando o modelo de embedding ou a versão de extração muda.
+
+    ``replace_existing=False`` + índice existente em disco
+        Ativa a **reindexação incremental por hash** (delega a
+        ``_build_index_incremental``). Processa apenas arquivos alterados,
+        novos ou removidos desde a última indexação.
+
+    ``replace_existing=False`` + sem índice em disco
+        Primeira indexação: cria um índice novo a partir de zero sem precisar
+        apagar nada.
+
+    O parâmetro ``incremental`` (raramente usado) permite sobrescrever a
+    detecção automática quando chamado de código externo.
     """
     from txtai import Embeddings
 
@@ -253,6 +380,8 @@ def build_index(
     ensure_txtai_parent_exists()
     index_path = txtai_index_path()
 
+    # Determina o modo: incremental automático quando existe índice e o usuário
+    # não pediu substituição explícita.
     use_incremental = (
         incremental
         if incremental is not None
@@ -278,6 +407,7 @@ def build_index(
             progress=progress,
         )
 
+    # --- Fluxo de reconstrução total (não-incremental) ---
     rows, prep_stats = prepare_rows(
         scans,
         project_ids=project_ids,
@@ -297,8 +427,8 @@ def build_index(
     emb = Embeddings(embeddings_config())
 
     try:
-        # Fluxo não-incremental: sempre constrói índice do zero (sem carregar o
-        # índice existente), evitando duplicação de chunks em execuções repetidas.
+        # Sempre constrói do zero: não carrega índice existente para evitar
+        # duplicação de chunks em execuções repetidas sem replace_existing.
         _upsert_rows_batched(
             emb,
             rows,
@@ -306,6 +436,8 @@ def build_index(
             use_initial_index=True,
             progress=progress,
         )
+        # Monta manifesto completo com hashes e IDs de todos os arquivos
+        # processados, para que a próxima execução possa operar de forma incremental.
         chunk_sig = chunking_signature(max_chars, overlap, max_doc_chars)
         manifest = IndexManifest(
             embedding_model=EMBEDDING_MODEL_ID,
@@ -325,6 +457,8 @@ def build_index(
             if content_hash:
                 manifest.set_file(key, content_hash=content_hash, chunk_ids=chunk_ids)
         emb.save(str(index_path))
+        # O manifesto é salvo APÓS o índice; seu mtime serve de referência para
+        # invalidação do cache do Streamlit (ver index_mtime()).
         save_manifest(manifest)
         stats.chunks_written = len(rows)
     finally:
@@ -332,6 +466,8 @@ def build_index(
 
     return stats
 
+
+# ── Fluxo incremental ────────────────────────────────────────────────────────
 
 def _build_index_incremental(
     files: list[ScannedFile],
@@ -343,12 +479,31 @@ def _build_index_incremental(
     batch_size: int,
     progress: Callable[[str], None] | None,
 ) -> BuildStats:
+    """
+    Atualiza o índice processando apenas os arquivos que mudaram.
+
+    Algoritmo
+    ---------
+    1. Carrega o manifesto; verifica compatibilidade de modelo/versão/parâmetros.
+    2. Para cada arquivo no inventário:
+       a. Calcula o hash SHA-256 atual.
+       b. Compara com o manifesto: se igual e versões ok → pula (``skipped``).
+       c. Se diferente: coleta IDs antigos para deleção (antes de processar,
+          garantindo remoção mesmo se o arquivo virou vazio) e extrai/chunka.
+    3. Após o loop, verifica quais chaves do manifesto não existem mais no
+       inventário (arquivos deletados do disco) e coleta seus IDs para deleção.
+    4. Se não há nada para deletar nem para inserir → retorna sem gravar
+       (early-return seguro: o manifesto já está correto para este estado).
+    5. Carrega o índice existente, aplica deleções e inserções, salva.
+    """
     from txtai import Embeddings
 
     stats.incremental = True
     manifest = load_manifest()
     had_manifest = manifest_exists() and bool(manifest.files)
 
+    # Troca de modelo de embedding incompatibiliza os vetores existentes;
+    # exige reconstrução total em vez de atualização.
     if manifest.embedding_model and manifest.embedding_model != EMBEDDING_MODEL_ID:
         stats.errors.append(
             f"Modelo do manifesto ({manifest.embedding_model}) difere do atual "
@@ -363,10 +518,13 @@ def _build_index_incremental(
             "indexação incremental (ou use **Substituir índice** uma vez)."
         )
 
+    # Atualiza os campos de versão no manifesto em memória; serão gravados no
+    # final apenas se houver mudanças efetivas no índice.
     manifest.embedding_model = EMBEDDING_MODEL_ID
     chunk_sig = chunking_signature(max_chars, overlap, max_doc_chars)
     extraction_ok = manifest.extraction_logic_version == EXTRACTION_LOGIC_VERSION
     chunking_ok = manifest.chunking_signature == chunk_sig
+
     if had_manifest and not extraction_ok:
         stats.errors.append(
             f"Versão da extração mudou ({manifest.extraction_logic_version} → "
@@ -383,22 +541,27 @@ def _build_index_incremental(
     current_keys: set[str] = set()
     rows_to_upsert: list[Row] = []
     ids_to_delete: list[str] = []
-    file_updates: list[tuple[str, str, list[str]]] = []  # key, hash, chunk_ids
+    # Acumulador de atualizações do manifesto; gravado no final para garantir
+    # consistência entre índice e manifesto (ambos atualizados ou nenhum).
+    file_updates: list[tuple[str, str, list[str]]] = []  # (key, hash, chunk_ids)
 
     for sf in files:
         key = file_index_key(sf)
         current_keys.add(key)
-        label = f"{sf.project_id}/{sf.relative_path}"
         if progress:
-            progress(f"analisando {label}")
+            progress(f"analisando {sf.project_id}/{sf.relative_path}")
 
         content_hash, hash_err = resolve_content_hash(sf)
         if not content_hash:
             detail = f" ({hash_err})" if hash_err else ""
-            stats.errors.append(f"{label}: não foi possível calcular SHA-256{detail}.")
+            stats.errors.append(f"{key}: não foi possível calcular SHA-256{detail}.")
             continue
 
         prev = manifest.get(key) if had_manifest else None
+
+        # Pula o arquivo apenas quando todas as condições de estabilidade são
+        # atendidas: versões compatíveis, arquivo presente no manifesto e hash
+        # idêntico ao registrado.
         skip_unchanged = (
             extraction_ok
             and chunking_ok
@@ -409,6 +572,9 @@ def _build_index_incremental(
             stats.files_skipped_unchanged += 1
             continue
 
+        # IDs antigos coletados ANTES de chamar rows_for_file: se o arquivo
+        # virou vazio (sem texto), seus chunks antigos ainda precisam ser
+        # removidos do índice, e o manifesto precisa ser atualizado.
         if prev:
             ids_to_delete.extend(prev.chunk_ids)
 
@@ -423,6 +589,8 @@ def _build_index_incremental(
         if not had_text:
             stats.files_empty += 1
             if prev:
+                # Remove do manifesto agora; os IDs já foram adicionados a
+                # ids_to_delete acima.
                 manifest.remove_file(key)
                 stats.files_removed += 1
             continue
@@ -432,6 +600,8 @@ def _build_index_incremental(
         rows_to_upsert.extend(file_rows)
         file_updates.append((key, content_hash, [uid for uid, _ in file_rows]))
 
+    # Arquivos presentes no manifesto mas ausentes no inventário atual foram
+    # deletados do disco pelo usuário. Seus chunks precisam sair do índice.
     if had_manifest:
         for key in list(manifest.files.keys()):
             if key not in current_keys:
@@ -440,6 +610,9 @@ def _build_index_incremental(
                     ids_to_delete.extend(removed_ids)
                     stats.files_removed += 1
 
+    # Early-return seguro: nenhuma operação no índice é necessária quando todos
+    # os arquivos foram pulados. O manifesto em memória reflete o estado correto
+    # (sem mudanças), então não precisamos gravá-lo novamente.
     if not ids_to_delete and not rows_to_upsert:
         return stats
 
@@ -476,6 +649,8 @@ def _build_index_incremental(
             stats.chunks_written = len(rows_to_upsert)
 
         emb.save(str(index_path))
+        # Atualiza o manifesto com os hashes e IDs dos arquivos processados;
+        # entradas de arquivos removidos/vazios já foram limpas no loop acima.
         for key, content_hash, chunk_ids in file_updates:
             manifest.set_file(key, content_hash=content_hash, chunk_ids=chunk_ids)
         save_manifest(manifest)
@@ -485,13 +660,28 @@ def _build_index_incremental(
     return stats
 
 
+# ── Utilitários de estado do índice ─────────────────────────────────────────
+
+def index_ready() -> bool:
+    """Retorna ``True`` se o diretório do índice existe e contém arquivos."""
+    p = txtai_index_path()
+    if not p.exists() or not p.is_dir():
+        return False
+    return any(p.iterdir())
+
+
 def index_mtime() -> float:
     """
-    Timestamp do índice salvo (para cache do Streamlit); 0 se inexistente.
+    Retorna o timestamp de modificação do índice; ``0.0`` se inexistente.
 
-    Usa o manifesto como referência primária porque, no Windows, o mtime de um
-    diretório nem sempre é atualizado quando arquivos internos mudam. O manifesto
-    é sempre escrito por último após ``emb.save()``, tornando seu mtime confiável.
+    Usado como chave de invalidação do ``st.cache_resource`` do Streamlit: quando
+    o valor muda (após um rebuild), o backend txtai em cache é descartado e
+    recarregado com o índice atualizado.
+
+    Usa o manifesto como referência primária porque, no Windows, o ``st_mtime``
+    de um diretório nem sempre é atualizado quando arquivos internos mudam.
+    O manifesto é sempre gravado **após** ``emb.save()``, tornando seu mtime
+    o indicador mais confiável de quando o índice foi atualizado pela última vez.
     """
     from .manifest import manifest_path
 
@@ -510,10 +700,15 @@ def index_mtime() -> float:
         return 0.0
 
 
+# ── Busca semântica ──────────────────────────────────────────────────────────
+
 def format_search_results(raw: object) -> list[dict]:
     """
-    Normaliza saída de ``Embeddings.search`` (com ``content=True`` → dicts;
-    sem content → tuplas ``(id, score)``).
+    Normaliza a saída de ``Embeddings.search`` para uma lista uniforme de dicts.
+
+    O txtai retorna dicts quando ``content=True`` está ativo (MVP) e tuplas
+    ``(id, score)`` quando não está. Esta função aceita ambos os formatos para
+    compatibilidade com índices criados com configurações diferentes.
     """
     if not raw:
         return []
@@ -527,7 +722,13 @@ def format_search_results(raw: object) -> list[dict]:
 
 
 def search_chunks(query: str, limit: int) -> list[dict]:
-    """Busca semântica (abre e fecha o índice — útil para scripts / testes isolados)."""
+    """
+    Executa uma busca semântica abrindo e fechando o índice a cada chamada.
+
+    Adequado para scripts e testes isolados onde não há cache de instância.
+    Para uso no Streamlit, prefira ``search_with_backend`` com a instância
+    cacheada em ``st.cache_resource``.
+    """
     from txtai import Embeddings
 
     if not index_ready():
@@ -547,19 +748,39 @@ def search_chunks(query: str, limit: int) -> list[dict]:
 
 
 def search_with_backend(backend: object, query: str, limit: int) -> list[dict]:
-    """Busca usando instância já carregada (ex.: cache ``st.cache_resource``)."""
+    """
+    Executa uma busca semântica usando uma instância de ``Embeddings`` já carregada.
+
+    Receber o backend como parâmetro (em vez de criá-lo internamente) evita
+    recarregar o modelo de ~500 MB a cada pergunta do usuário. A instância deve
+    ser gerenciada pelo chamador (ex.: ``st.cache_resource`` no Streamlit).
+    """
     q = (query or "").strip()
     if not q:
         return []
-    return format_search_results(backend.search(q, limit))
+    return format_search_results(backend.search(q, limit))  # type: ignore[attr-defined]
 
+
+# ── Formatação de contexto para o LLM ───────────────────────────────────────
 
 def format_context_for_llm(hits: list[dict], *, max_chars: int = 12000) -> str:
-    """Monta bloco de contexto citável para o prompt do chat."""
+    """
+    Monta o bloco de contexto citável a ser injetado no system prompt do chat.
+
+    Cada hit vira uma seção ``### Evidência [N]`` com o texto do chunk (que já
+    traz o prefixo ``[Projeto: ...] [Arquivo: ...]`` embutido em ``rows_for_file``).
+
+    O limite de ``max_chars`` (padrão 12 000) garante que o contexto não
+    ultrapasse uma fração razoável da janela de contexto do LLM. Quando
+    atingido, um marcador ``(… contexto truncado …)`` é inserido para que o
+    modelo saiba que há evidências omitidas e não presuma completude.
+    """
     lines: list[str] = []
     used = 0
     for i, h in enumerate(hits, start=1):
-        body = (h.get("text") or "").strip()
+        # Usa "cited" (texto completo com prefixo de projeto/arquivo) quando
+        # disponível; cai em "text" para compatibilidade com índices antigos.
+        body = (h.get("cited") or h.get("text") or "").strip()
         if not body:
             continue
         block = f"### Evidência [{i}]\n{body}\n\n"

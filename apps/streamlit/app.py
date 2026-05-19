@@ -1,8 +1,22 @@
 """
-Assistente de laboratório — UI Streamlit (MVP alinhado ao playbook biotech).
+Assistente de laboratório — interface Streamlit (MVP alinhado ao playbook biotech).
 
-Orquestra fontes locais segmentadas por projeto (`projects_loader`), prepara terreno para
-indexação RAG (txtai), chat com citações (LM Studio) e OLAP (DuckDB), conforme fases do plano.
+Ponto de entrada único da aplicação. Orquestra todos os subsistemas locais:
+
+- ``projects_loader``: descobre projetos e arquivos nos volumes montados.
+- ``rag``: extração, chunking, índice txtai e busca semântica.
+- ``OpenAI`` (cliente SDK): conversa com o LM Studio rodando no host via API
+  compatível com OpenAI.
+
+Abas da UI
+----------
+0. Início — visão geral do produto e fases do playbook.
+1. Fontes e inventário — escaneamento e tabela de documentos por projeto.
+2. Indexação RAG — construção/atualização do índice txtai com controles de chunk.
+3. Teste RAG (dev) — busca semântica direta sem passar pelo LLM.
+4. Chat — conversa com RAG + LM Studio; streaming opcional.
+5. OLAP — placeholder DuckDB (Fase 1/2 do plano).
+6. Diagnóstico — versões, caminhos, status txtai, teste de conectividade LLM.
 """
 
 from __future__ import annotations
@@ -45,7 +59,12 @@ from rag import (
 
 load_dotenv()
 
-# Mensagem de sistema padrão até o RAG injetar contexto de documentos.
+
+# ── System prompt ────────────────────────────────────────────────────────────
+# Instrução base enviada ao LLM em todas as conversas. Quando o RAG está ativo,
+# o contexto recuperado é **concatenado** a este prompt (não substitui), para
+# que o modelo mantenha o papel e as restrições definidas aqui.
+
 CHAT_SYSTEM_PROMPT = (
     """<role>
 Você é um assistente de laboratório experiente que atua em pesquisa e desenvolvimento de imunodiagnósticos, principalmente ELISA. Você passou muitos anos trabalhando com dados laboratoriais, planejamento de ensaios, interpretação de resultados. Já viu inúmeros erros por desatenção e sabe que documentação e rastreabilidade de informação é crucial em projetos de desenvolvimento. Você entende que existem múltiplos documentos de experimentos que representam linhas de raciocínio contínua, tratando, por tanto, os documentos não só isoladamente, mas uma sequência.
@@ -83,7 +102,10 @@ st.set_page_config(
 )
 
 
+# ── Helpers de configuração e conexão ───────────────────────────────────────
+
 def _root_from_session() -> Path:
+    """Retorna a raiz de projetos considerando o override digitado na barra lateral."""
     override = (st.session_state.get("path_override") or "").strip()
     if override:
         return Path(override).expanduser().resolve()
@@ -91,13 +113,20 @@ def _root_from_session() -> Path:
 
 
 def _parse_extensions(ext_input: str) -> frozenset[str]:
+    """Converte a string de extensões da UI em frozenset normalizado (ex.: ``'.docx'``)."""
     parts = [p.strip().lower() for p in ext_input.split(",") if p.strip()]
     exts = frozenset(p if p.startswith(".") else f".{p}" for p in parts)
     return exts if exts else DEFAULT_DOCUMENT_EXTENSIONS
 
 
 def _normalize_openai_base_url(url: str) -> str:
-    """Garante sufixo /v1 exigido pelo SDK OpenAI + LM Studio."""
+    """
+    Garante que a URL termine com ``/v1``, exigido pelo SDK OpenAI.
+
+    O LM Studio aceita chamadas sem o sufixo, mas o SDK Python da OpenAI
+    concatena os endpoints (``/chat/completions``, etc.) diretamente a
+    ``base_url``, portanto ``/v1`` precisa estar presente.
+    """
     u = url.strip().rstrip("/")
     if not u:
         return u
@@ -107,7 +136,12 @@ def _normalize_openai_base_url(url: str) -> str:
 
 
 def _llm_runtime_config() -> tuple[str, str, str]:
-    """(base_url com /v1, model_id, api_key)."""
+    """
+    Retorna ``(base_url_com_v1, model_id, api_key)`` lidos do ambiente.
+
+    A ``api_key`` cai em ``"lm-studio"`` quando nenhuma variável está definida;
+    o LM Studio aceita qualquer valor não vazio nesse campo.
+    """
     raw_base = os.environ.get("LLM_BASE_URL", "").strip()
     base = _normalize_openai_base_url(raw_base)
     model = os.environ.get("LLM_MODEL", "").strip()
@@ -132,9 +166,25 @@ def _is_timeout_error(exc: BaseException) -> bool:
     return False
 
 
+# ── Cache do backend txtai ───────────────────────────────────────────────────
+
 @st.cache_resource(show_spinner="Carregando índice vetorial (txtai)…")
 def _txtai_backend_cached(mtime_key: float):
-    """Instância txtai reutilizável; invalida quando ``mtime_key`` muda após reindexação."""
+    """
+    Carrega e armazena a instância ``Embeddings`` do txtai em cache de processo.
+
+    O ``st.cache_resource`` mantém a instância em memória entre reruns do
+    Streamlit, evitando recarregar o modelo de ~500 MB a cada interação.
+
+    O parâmetro ``mtime_key`` é o timestamp de modificação do manifesto
+    (obtido via ``index_mtime()``). Quando o índice é reconstruído, esse valor
+    muda e o Streamlit descarta o cache, forçando o carregamento do índice
+    atualizado. Após um rebuild explícito, ``_txtai_backend_cached.clear()``
+    também é chamado diretamente para garantia imediata.
+
+    Retorna ``None`` quando não há índice (``mtime_key <= 0``), evitando
+    tentativa de carregar um caminho inexistente.
+    """
     if mtime_key <= 0:
         return None
     from txtai import Embeddings
@@ -147,7 +197,13 @@ def _txtai_backend_cached(mtime_key: float):
 
 
 def rag_semantic_search(query: str, limit: int) -> list[dict]:
-    """Busca semântica usando cache do backend (evita recarregar o modelo a cada interação)."""
+    """
+    Executa uma busca semântica usando o backend txtai em cache.
+
+    Separa responsabilidades: ``_txtai_backend_cached`` gerencia o ciclo de
+    vida do modelo (carregamento caro, feito uma vez); esta função apenas
+    executa a busca (barata, feita a cada pergunta).
+    """
     if not index_ready():
         return []
     mt = index_mtime()
@@ -196,10 +252,15 @@ def _check_openai_compatible_models(base_url: str, *, timeout_s: float = 5.0) ->
 
 def _trim_chat_history(messages: list[dict], max_turns: int) -> list[dict]:
     """
-    Mantém os últimos ``max_turns`` pares (user + assistant) do histórico.
+    Retorna os últimos ``max_turns`` pares (user + assistant) do histórico.
 
-    Sem truncagem, o prompt cresce indefinidamente e pode ultrapassar a janela
-    de contexto do modelo — causando respostas truncadas ou erros silenciosos.
+    Cada "turno" corresponde a 2 mensagens (1 do usuário + 1 do assistente),
+    portanto o limite em mensagens é ``max_turns × 2``.
+
+    Sem truncagem, o histórico cresce sem limite e o prompt total (system
+    prompt + contexto RAG até 12 k chars + histórico) pode ultrapassar a
+    janela de contexto do modelo, causando respostas truncadas ou erros
+    silenciosos dependendo do backend LLM.
     """
     if max_turns <= 0:
         return []
@@ -209,7 +270,10 @@ def _trim_chat_history(messages: list[dict], max_turns: int) -> list[dict]:
     return messages[-max_msgs:]
 
 
+# ── Barra lateral ────────────────────────────────────────────────────────────
+
 def _render_sidebar() -> None:
+    """Renderiza os controles de escaneamento na barra lateral."""
     st.sidebar.markdown("### Fontes locais")
     st.sidebar.caption(
         "Pastas em volume (Docker) alimentam o inventário e, em seguida, a **indexação RAG**. "
@@ -259,7 +323,10 @@ def _render_sidebar() -> None:
         st.sidebar.error(err)
 
 
+# ── Abas da UI ───────────────────────────────────────────────────────────────
+
 def _tab_inicio() -> None:
+    """Aba 0 — Visão geral do produto e checklist de fases do playbook."""
     st.header("Agente de IA para documentos de P&D")
     st.markdown(
         "Este produto segue o **playbook MVP biotech**: análise documental local (`docx`, `xlsx`, `xlsm`, …), "
@@ -294,6 +361,7 @@ def _tab_inicio() -> None:
 
 
 def _tab_fontes(root: Path, root_ok: bool, root_msg: str) -> None:
+    """Aba 1 — Tabela do inventário de documentos por projeto."""
     st.header("Fontes e inventário")
     st.caption(
         "Módulo `projects_loader`: descobre projetos e arquivos que alimentarão a **indexação para RAG** "
@@ -376,6 +444,7 @@ def _tab_fontes(root: Path, root_ok: bool, root_msg: str) -> None:
 
 
 def _tab_indexacao_rag(scans: list[ProjectScan] | None) -> None:
+    """Aba 2 — Construção e atualização do índice txtai."""
     st.header("Indexação RAG")
     st.caption(
         f"Pipeline: extração (docx/xlsx/pdf/txt/md/csv) → chunking → **`txtai`** + "
@@ -457,6 +526,8 @@ def _tab_indexacao_rag(scans: list[ProjectScan] | None) -> None:
         help="Evita carregar PDF/planilhas enormes inteiros na memória.",
     )
 
+    # Desmarca automaticamente após a primeira indexação bem-sucedida, pois o
+    # modo incremental já é o comportamento desejado em execuções subsequentes.
     replace_default = not index_ready()
     replace = st.checkbox(
         "Substituir índice existente",
@@ -539,7 +610,8 @@ def _tab_indexacao_rag(scans: list[ProjectScan] | None) -> None:
     with st.expander("Metadados por chunk (campos armazenados com o texto)"):
         st.json(
             {
-                "text": "trecho indexado",
+                "text": "conteúdo puro — usado para gerar o embedding",
+                "cited": "[Projeto: X] [Arquivo: Y] [Chunk N]\\n<conteúdo> — exibido ao usuário e enviado ao LLM",
                 "project_id": "nome da pasta do projeto",
                 "relative_path": "caminho dentro do projeto",
                 "chunk_index": 0,
@@ -549,7 +621,7 @@ def _tab_indexacao_rag(scans: list[ProjectScan] | None) -> None:
 
 
 def _tab_rag_dev() -> None:
-    """Ferramentas de desenvolvimento: inspecionar busca semântica sem passar pelo LLM."""
+    """Aba 3 — Busca semântica direta no índice txtai, sem passar pelo LLM."""
     st.header("Teste RAG (desenvolvedor)")
     st.caption(
         "Consulta direta ao índice **txtai** (mesmo backend do chat com RAG). "
@@ -580,7 +652,9 @@ def _tab_rag_dev() -> None:
                 st.metric("Resultados", len(hits))
                 for i, h in enumerate(hits, start=1):
                     score = h.get("score")
-                    body = (h.get("text") or "").strip()
+                    # "cited" contém o texto completo com prefixo de projeto/arquivo.
+                    # Cai em "text" para compatibilidade com índices antigos.
+                    body = (h.get("cited") or h.get("text") or "").strip()
                     title = f"#{i} · score={score}"
                     with st.expander(title, expanded=(i <= 3)):
                         st.markdown(body if body else "_(sem texto)_")
@@ -589,6 +663,22 @@ def _tab_rag_dev() -> None:
 
 
 def _tab_chat() -> None:
+    """
+    Aba 4 — Chat com o LLM com injeção opcional de contexto RAG.
+
+    Estratégia de RAG
+    -----------------
+    O contexto recuperado é injetado no **system prompt** (não na mensagem do
+    usuário). Isso preserva o papel e as restrições definidas em
+    ``CHAT_SYSTEM_PROMPT`` e sinaliza claramente ao modelo que o contexto é
+    evidência documental, não instrução do usuário.
+
+    Erro na chamada LLM
+    -------------------
+    Em caso de exceção, a última mensagem do usuário é removida do histórico
+    em sessão. Isso permite que o usuário reenvie a mensagem após corrigir a
+    configuração do servidor, sem duplicar a pergunta no histórico.
+    """
     st.header("Chat com o agente")
     st.caption(
         "Conversa com o modelo **LM Studio** (API OpenAI-compatible). "
@@ -746,12 +836,14 @@ def _tab_chat() -> None:
 
 
 def _tab_olap() -> None:
+    """Aba 5 — Placeholder para consultas OLAP via DuckDB (Fase 1/2 do plano)."""
     st.header("Dados tabulares (OLAP)")
     st.caption("Playbook: **DuckDB** em arquivo em volume; consultas read-only a partir desta UI.")
     st.info("Conexão DuckDB e painéis de exemplo entram na Fase 1/2 do plano.")
 
 
 def _tab_diagnostico(root: Path, root_ok: bool, root_msg: str) -> None:
+    """Aba 6 — Versões, caminhos, status do índice e teste de conectividade LLM."""
     st.header("Diagnóstico")
     st.subheader("Runtime")
     st.write(f"- Python `{sys.version.split()[0]}` em **{platform.system()}**")
@@ -792,7 +884,10 @@ def _tab_diagnostico(root: Path, root_ok: bool, root_msg: str) -> None:
         st.warning("Defina `LLM_BASE_URL` no ambiente (ex.: `http://host.docker.internal:1234/v1` no Docker).")
 
 
-# --- Layout principal ---
+# ── Ponto de entrada ─────────────────────────────────────────────────────────
+# O Streamlit re-executa este arquivo inteiro a cada interação do usuário.
+# Funções cacheadas (_txtai_backend_cached) e o st.session_state preservam
+# estado entre execuções dentro da mesma sessão de browser.
 
 _render_sidebar()
 
