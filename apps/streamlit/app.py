@@ -15,7 +15,7 @@ Abas da UI
 2. Indexação RAG — construção/atualização do índice txtai com controles de chunk.
 3. Teste RAG (dev) — busca semântica direta sem passar pelo LLM.
 4. Chat — conversa com RAG + LM Studio; streaming opcional.
-5. OLAP — placeholder DuckDB (Fase 1/2 do plano).
+5. OLAP — DuckDB em volume; dados demo e agregações read-only.
 6. Diagnóstico — versões, caminhos, status txtai, teste de conectividade LLM.
 """
 
@@ -43,6 +43,17 @@ from projects_loader import (
     running_inside_docker,
     scan_all_projects,
     validate_projetos_root,
+)
+from olap import (
+    DEMO_TABLE,
+    check_duckdb,
+    demo_aggregation,
+    demo_detail,
+    duckdb_data_root,
+    duckdb_database_path,
+    duckdb_library_version,
+    olap_status,
+    seed_demo_data,
 )
 from rag import (
     EMBEDDING_MODEL_ID,
@@ -353,7 +364,7 @@ def _tab_inicio() -> None:
     )
     with st.expander("Fases do plano (checklist)"):
         st.markdown(
-            "- **Fase 1** — Diagnóstico, LM Studio, DuckDB olá mundo, metadados.\n"
+            "- **Fase 1** — Diagnóstico, LM Studio, DuckDB olá mundo (aba OLAP), metadados.\n"
             "- **Fase 2** — Parsing, hash, página de status de ingestão.\n"
             "- **Fase 3** — txtai + chat com citações.\n"
             "- **Fase 4** — RBAC, auditoria, guardrails."
@@ -836,10 +847,54 @@ def _tab_chat() -> None:
 
 
 def _tab_olap() -> None:
-    """Aba 5 — Placeholder para consultas OLAP via DuckDB (Fase 1/2 do plano)."""
+    """Aba 5 — DuckDB em volume: seed demo e agregação read-only."""
     st.header("Dados tabulares (OLAP)")
-    st.caption("Playbook: **DuckDB** em arquivo em volume; consultas read-only a partir desta UI.")
-    st.info("Conexão DuckDB e painéis de exemplo entram na Fase 1/2 do plano.")
+    st.caption(
+        "Motor **DuckDB** em arquivo no volume persistente. "
+        "Esta fase traz um *olá mundo*: tabela demo e agregação por projeto."
+    )
+
+    status = olap_status()
+    c1, c2 = st.columns(2)
+    with c1:
+        st.write(f"- Biblioteca DuckDB: `{status['library_version']}`")
+        st.write(f"- Diretório de dados: `{status['data_root']}`")
+    with c2:
+        st.write(f"- Arquivo: `{status['database_path']}`")
+        st.write(
+            f"- Banco criado: **{'sim' if status['database_exists'] else 'não'}** · "
+            f"demo: **{'sim' if status['demo_ready'] else 'não'}**"
+        )
+
+    col_seed, col_refresh = st.columns(2)
+    with col_seed:
+        if st.button("Criar / recriar dados de demonstração", key="btn_olap_seed"):
+            created = seed_demo_data(force=True)
+            if created:
+                st.success(f"Tabela `{DEMO_TABLE}` populada com linhas de exemplo.")
+            else:
+                st.info("Dados demo já existiam; use recriar para substituir.")
+            st.rerun()
+    with col_refresh:
+        if st.button("Atualizar painéis", key="btn_olap_refresh"):
+            st.rerun()
+
+    if not status["demo_ready"]:
+        st.warning(
+            "Nenhum dado demo ainda. Clique em **Criar / recriar dados de demonstração** "
+            "para materializar o banco no volume (persiste entre reinícios do contêiner)."
+        )
+        return
+
+    st.subheader("Agregação por projeto (read-only)")
+    st.dataframe(demo_aggregation(), use_container_width=True, hide_index=True)
+
+    with st.expander("Linhas brutas da tabela demo"):
+        st.dataframe(demo_detail(), use_container_width=True, hide_index=True)
+
+    st.caption(
+        "Próximas fases: materializar resumos da ingestão de documentos neste mesmo arquivo DuckDB."
+    )
 
 
 def _tab_diagnostico(root: Path, root_ok: bool, root_msg: str) -> None:
@@ -863,6 +918,21 @@ def _tab_diagnostico(root: Path, root_ok: bool, root_msg: str) -> None:
     st.write(f"- `ASSISTENTE_TXTAI_DIR` / dados: `{txtai_data_root()}`")
     st.write(f"- Índice: `{txtai_index_path()}`")
     st.write(f"- Índice pronto: **{'sim' if index_ready() else 'não'}** · modelo: `{EMBEDDING_MODEL_ID}`")
+
+    st.subheader("DuckDB / OLAP")
+    olap = olap_status()
+    st.write(f"- `ASSISTENTE_DUCKDB_DIR` / dados: `{duckdb_data_root()}`")
+    st.write(f"- Arquivo: `{duckdb_database_path()}` · versão lib: `{duckdb_library_version()}`")
+    st.write(
+        f"- Banco no disco: **{'sim' if olap['database_exists'] else 'não'}** · "
+        f"tabela demo: **{'sim' if olap['demo_ready'] else 'não'}**"
+    )
+    if st.button("Testar conexão DuckDB (SELECT 1)", key="btn_duckdb_ping"):
+        ok, detail = check_duckdb()
+        if ok:
+            st.success(detail)
+        else:
+            st.error(detail)
 
     st.subheader("LM Studio (API compatível com OpenAI)")
     llm_base = os.environ.get("LLM_BASE_URL", "").strip()
