@@ -9,7 +9,8 @@ WORKDIR /app
 
 COPY apps/streamlit/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir -r /app/requirements.txt
+    && pip install --no-cache-dir -r /app/requirements.txt \
+    && python -c "import duckdb; print('duckdb', duckdb.__version__)"
 
 COPY apps/streamlit/ /app/
 
