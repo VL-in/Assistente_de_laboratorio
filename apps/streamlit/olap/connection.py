@@ -159,12 +159,29 @@ def demo_detail(limit: int = 50) -> pd.DataFrame:
 
 def olap_status() -> dict[str, Any]:
     """Resumo para diagnóstico e cabeçalho da aba OLAP."""
+    from .constants import INGEST_MANIFEST_TABLE
+    from .ingest import has_ingested_tables
+
     root = duckdb_database_path().parent
     demo_ready = False
+    ingested_tables = 0
+    ingested_rows = 0
     if database_exists():
         conn = open_duckdb(read_only=True)
         try:
             demo_ready = demo_table_exists(conn)
+            try:
+                row = conn.execute(
+                    f"""
+                    SELECT COUNT(*), COALESCE(SUM(row_count), 0)
+                    FROM {INGEST_MANIFEST_TABLE}
+                    """
+                ).fetchone()
+                if row:
+                    ingested_tables = int(row[0] or 0)
+                    ingested_rows = int(row[1] or 0)
+            except Exception:
+                pass
         finally:
             conn.close()
     return {
@@ -174,4 +191,7 @@ def olap_status() -> dict[str, Any]:
         "database_filename": DUCKDB_DATABASE_FILENAME,
         "database_exists": database_exists(),
         "demo_ready": demo_ready,
+        "ingested_tables": ingested_tables,
+        "ingested_rows": ingested_rows,
+        "has_ingested_tables": has_ingested_tables(),
     }

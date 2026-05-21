@@ -15,7 +15,7 @@ Abas da UI
 2. Indexação RAG — construção/atualização do índice txtai com controles de chunk.
 3. Teste RAG (dev) — busca semântica direta sem passar pelo LLM.
 4. Chat — conversa com RAG + LM Studio; streaming opcional.
-5. OLAP — DuckDB em volume; dados demo e agregações read-only.
+5. OLAP — DuckDB: ingestão de planilhas e catálogo de tabelas.
 6. Diagnóstico — versões, caminhos, status txtai, teste de conectividade LLM.
 """
 
@@ -46,15 +46,20 @@ from projects_loader import (
 )
 from olap import (
     DEMO_TABLE,
+    TABULAR_EXTENSIONS,
     check_duckdb,
     demo_aggregation,
-    demo_detail,
     duckdb_data_root,
     duckdb_database_path,
     duckdb_library_version,
+    has_ingested_tables,
+    list_ingested_tables,
     olap_status,
+    run_nl_olap_query,
     seed_demo_data,
+    sync_tabular_from_scans,
 )
+from olap.schema_catalog import build_schema_catalog_text
 from rag import (
     EMBEDDING_MODEL_ID,
     build_index,
@@ -319,19 +324,34 @@ def _render_sidebar() -> None:
             ext_input = str(st.session_state.get("ext_input") or "")
             exts = _parse_extensions(ext_input)
             compute_hashes = bool(st.session_state.get("compute_hashes"))
-            with st.spinner("Lendo árvore de diretórios…"):
+            with st.spinner("Lendo árvore de diretórios e sincronizando planilhas no DuckDB…"):
                 scans = scan_all_projects(
                     root,
                     extensions=exts,
                     compute_hashes=compute_hashes,
                 )
+                tabular_scans = scan_all_projects(
+                    root,
+                    extensions=TABULAR_EXTENSIONS,
+                    compute_hashes=compute_hashes,
+                )
+                olap_stats = sync_tabular_from_scans(tabular_scans)
             st.session_state["last_scan"] = scans
             st.session_state["last_root"] = str(root)
             st.session_state["last_exts"] = exts
+            st.session_state["last_olap_sync"] = olap_stats
             st.rerun()
     err = st.session_state.get("sidebar_scan_error")
     if err:
         st.sidebar.error(err)
+    olap_sync = st.session_state.get("last_olap_sync")
+    if olap_sync is not None:
+        st.sidebar.caption(
+            f"DuckDB: {olap_sync.tables_touched} tabela(s) atualizada(s), "
+            f"{olap_sync.tables_removed} removida(s)."
+        )
+        if olap_sync.errors:
+            st.sidebar.warning(f"OLAP: {len(olap_sync.errors)} erro(s) na ingestão.")
 
 
 # ── Abas da UI ───────────────────────────────────────────────────────────────
@@ -693,7 +713,7 @@ def _tab_chat() -> None:
     st.header("Chat com o agente")
     st.caption(
         "Conversa com o modelo **LM Studio** (API OpenAI-compatible). "
-        "Opcionalmente injeta trechos recuperados pelo índice **txtai** (RAG)."
+        "Opcionalmente usa **RAG** (txtai) e/ou **OLAP** (DuckDB: pergunta → SQL → dados tabulares)."
     )
 
     base, model, api_key = _llm_runtime_config()
@@ -710,7 +730,7 @@ def _tab_chat() -> None:
     if "chat_messages" not in st.session_state:
         st.session_state.chat_messages = []
 
-    r1, r2, r3, r4 = st.columns([3, 1, 2, 2])
+    r1, r2, r3, r4, r5 = st.columns([2, 2, 1, 2, 2])
     with r1:
         use_rag = st.toggle(
             "Usar RAG (txtai)",
@@ -720,6 +740,14 @@ def _tab_chat() -> None:
             help="Recupera trechos do índice com a pergunta atual e envia como contexto ao modelo.",
         )
     with r2:
+        use_olap = st.toggle(
+            "Consultar DuckDB (OLAP)",
+            value=has_ingested_tables(),
+            disabled=not has_ingested_tables(),
+            key="chat_use_olap",
+            help="Traduz a pergunta em SQL read-only, executa no DuckDB e injeta o resultado no contexto.",
+        )
+    with r3:
         rag_top_k = st.number_input(
             "Trechos RAG",
             min_value=1,
@@ -728,7 +756,7 @@ def _tab_chat() -> None:
             key="chat_rag_top_k",
             disabled=not use_rag,
         )
-    with r3:
+    with r4:
         max_tokens = st.number_input(
             "Max. tokens (resposta)",
             min_value=128,
@@ -738,7 +766,7 @@ def _tab_chat() -> None:
             key="chat_max_tokens",
             help="Limite de tokens gerados pelo modelo. Evita respostas truncadas em modelos com default conservador.",
         )
-    with r4:
+    with r5:
         use_stream = st.toggle("Resposta em streaming", value=True, key="chat_use_stream")
 
     col_hist, _ = st.columns([2, 3])
@@ -756,6 +784,11 @@ def _tab_chat() -> None:
 
     if use_rag and not index_ready():
         st.warning("Índice txtai indisponível. Construa em **Indexação RAG** ou desative o RAG.")
+    if use_olap and not has_ingested_tables():
+        st.warning(
+            "Nenhuma planilha no DuckDB. Use **Escanear pastas agora** na barra lateral "
+            f"(ingere automaticamente {', '.join(sorted(TABULAR_EXTENSIONS))})."
+        )
 
     c1, c2 = st.columns([1, 4])
     with c1:
@@ -789,6 +822,42 @@ def _tab_chat() -> None:
                 system_prompt += (
                     "\n\n(Nenhum trecho relevante foi recuperado do índice para esta pergunta — "
                     "não invente dados de ensaios.)"
+                )
+
+        olap_result = None
+        if use_olap and has_ingested_tables():
+            with st.spinner("Consultando DuckDB (linguagem natural → SQL)…"):
+                olap_result = run_nl_olap_query(prompt, client=client, model=model)
+            if olap_result.ok and olap_result.context_for_llm:
+                system_prompt += "\n\n" + olap_result.context_for_llm
+                system_prompt += (
+                    "\n\nAo responder com dados tabulares acima, cite projeto (_project_id) "
+                    "e arquivo (_source_file). Não invente valores fora do resultado SQL."
+                )
+                with st.expander("OLAP: SQL gerado e dados retornados", expanded=False):
+                    if olap_result.sql:
+                        st.code(olap_result.sql, language="sql")
+                    if olap_result.dataframe is not None:
+                        st.caption(f"{len(olap_result.dataframe)} linha(s)")
+                        st.dataframe(
+                            olap_result.dataframe,
+                            use_container_width=True,
+                            hide_index=True,
+                        )
+            elif olap_result.error:
+                st.warning(f"OLAP: {olap_result.error}")
+                with st.expander("Diagnóstico do OLAP (SQL e resposta do LLM)", expanded=False):
+                    if olap_result.sql:
+                        st.markdown("**SQL gerado (com erro):**")
+                        st.code(olap_result.sql, language="sql")
+                    if olap_result.raw_llm_response:
+                        st.markdown("**Resposta bruta do LLM:**")
+                        st.code(olap_result.raw_llm_response, language="text")
+                    else:
+                        st.caption("O LLM não retornou conteúdo nesta requisição.")
+                system_prompt += (
+                    f"\n\n### OLAP (falha na consulta tabular)\n{olap_result.error}\n"
+                    "Explique o problema ao usuário sem inventar números de planilhas."
                 )
 
         history_trimmed = _trim_chat_history(
@@ -846,12 +915,12 @@ def _tab_chat() -> None:
                 )
 
 
-def _tab_olap() -> None:
-    """Aba 5 — DuckDB em volume: seed demo e agregação read-only."""
+def _tab_olap(scans: list[ProjectScan] | None) -> None:
+    """Aba 5 — DuckDB: ingestão de planilhas e catálogo."""
     st.header("Dados tabulares (OLAP)")
     st.caption(
-        "Motor **DuckDB** em arquivo no volume persistente. "
-        "Esta fase traz um *olá mundo*: tabela demo e agregação por projeto."
+        f"Ingestão automática de **{', '.join(sorted(TABULAR_EXTENSIONS))}** ao escanear pastas "
+        "(barra lateral). No **Chat**, ative *Consultar DuckDB* para perguntas em linguagem natural."
     )
 
     status = olap_status()
@@ -862,39 +931,55 @@ def _tab_olap() -> None:
     with c2:
         st.write(f"- Arquivo: `{status['database_path']}`")
         st.write(
-            f"- Banco criado: **{'sim' if status['database_exists'] else 'não'}** · "
-            f"demo: **{'sim' if status['demo_ready'] else 'não'}**"
+            f"- Planilhas ingeridas: **{status['ingested_tables']}** tabela(s), "
+            f"**{status['ingested_rows']}** linha(s) no total"
         )
 
-    col_seed, col_refresh = st.columns(2)
-    with col_seed:
-        if st.button("Criar / recriar dados de demonstração", key="btn_olap_seed"):
-            created = seed_demo_data(force=True)
-            if created:
-                st.success(f"Tabela `{DEMO_TABLE}` populada com linhas de exemplo.")
-            else:
-                st.info("Dados demo já existiam; use recriar para substituir.")
-            st.rerun()
-    with col_refresh:
-        if st.button("Atualizar painéis", key="btn_olap_refresh"):
+    if scans is None:
+        st.warning("Faça **Escanear pastas agora** na barra lateral para ingerir planilhas.")
+    else:
+        if st.button("Sincronizar planilhas com DuckDB agora", type="primary", key="btn_olap_sync"):
+            root = _root_from_session()
+            with st.spinner("Carregando CSV/XLSX/XLSM nos projetos…"):
+                tabular_scans = scan_all_projects(
+                    root,
+                    extensions=TABULAR_EXTENSIONS,
+                    compute_hashes=bool(st.session_state.get("compute_hashes")),
+                )
+                stats = sync_tabular_from_scans(tabular_scans)
+            st.session_state["last_olap_sync"] = stats
+            st.success(
+                f"{stats.tables_touched} tabela(s) criada(s)/atualizada(s), "
+                f"{stats.tables_removed} removida(s)."
+            )
+            if stats.errors:
+                with st.expander("Erros de ingestão"):
+                    st.code("\n".join(stats.errors[:30]), language="text")
             st.rerun()
 
-    if not status["demo_ready"]:
-        st.warning(
-            "Nenhum dado demo ainda. Clique em **Criar / recriar dados de demonstração** "
-            "para materializar o banco no volume (persiste entre reinícios do contêiner)."
+    catalog = list_ingested_tables()
+    st.subheader("Catálogo de tabelas (planilhas)")
+    if catalog.empty:
+        st.info(
+            "Nenhuma planilha no banco. Confirme que existem arquivos "
+            f"{', '.join(sorted(TABULAR_EXTENSIONS))} nos projetos e escaneie de novo."
         )
-        return
+    else:
+        st.dataframe(catalog, use_container_width=True, hide_index=True)
 
-    st.subheader("Agregação por projeto (read-only)")
-    st.dataframe(demo_aggregation(), use_container_width=True, hide_index=True)
+    with st.expander("Catálogo de schema (enviado ao LLM)"):
+        schema_text = build_schema_catalog_text()
+        if schema_text.startswith("("):
+            st.warning(schema_text)
+        else:
+            st.code(schema_text, language="text")
 
-    with st.expander("Linhas brutas da tabela demo"):
-        st.dataframe(demo_detail(), use_container_width=True, hide_index=True)
-
-    st.caption(
-        "Próximas fases: materializar resumos da ingestão de documentos neste mesmo arquivo DuckDB."
-    )
+    with st.expander("Dados de demonstração (opcional)"):
+        if st.button("Criar / recriar demo", key="btn_olap_seed"):
+            seed_demo_data(force=True)
+            st.rerun()
+        if status["demo_ready"]:
+            st.dataframe(demo_aggregation(), use_container_width=True, hide_index=True)
 
 
 def _tab_diagnostico(root: Path, root_ok: bool, root_msg: str) -> None:
@@ -925,7 +1010,8 @@ def _tab_diagnostico(root: Path, root_ok: bool, root_msg: str) -> None:
     st.write(f"- Arquivo: `{duckdb_database_path()}` · versão lib: `{duckdb_library_version()}`")
     st.write(
         f"- Banco no disco: **{'sim' if olap['database_exists'] else 'não'}** · "
-        f"tabela demo: **{'sim' if olap['demo_ready'] else 'não'}**"
+        f"planilhas: **{olap['ingested_tables']}** tabela(s) · "
+        f"demo: **{'sim' if olap['demo_ready'] else 'não'}**"
     )
     if st.button("Testar conexão DuckDB (SELECT 1)", key="btn_duckdb_ping"):
         ok, detail = check_duckdb()
@@ -992,6 +1078,6 @@ with tabs[3]:
 with tabs[4]:
     _tab_chat()
 with tabs[5]:
-    _tab_olap()
+    _tab_olap(scans)
 with tabs[6]:
     _tab_diagnostico(root, root_ok, root_msg)
