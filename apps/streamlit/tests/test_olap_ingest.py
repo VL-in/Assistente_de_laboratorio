@@ -15,7 +15,11 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from olap.ingest import (  # noqa: E402
+    _convert_br_number,
+    _convert_intl_number,
     _deduplicate_columns,
+    _smart_convert_single_value,
+    _try_convert_column_to_numeric,
     has_ingested_tables,
     ingest_key,
     list_ingested_tables,
@@ -104,6 +108,75 @@ class DeduplicateColumnsTests(unittest.TestCase):
         cols = ["a", "b", "a", "c", "b"]
         result = _deduplicate_columns(cols)
         self.assertEqual(result, ["a", "b", "a_1", "c", "b_1"])
+
+
+class BrazilianNumberConversionTests(unittest.TestCase):
+    """Testes da conversão de números brasileiros (vírgula decimal)."""
+
+    def test_convert_simple_decimal(self) -> None:
+        self.assertAlmostEqual(_convert_br_number("0,98"), 0.98)
+        self.assertAlmostEqual(_convert_br_number("1,5"), 1.5)
+        self.assertAlmostEqual(_convert_br_number("-1,5"), -1.5)
+
+    def test_convert_thousands_separator(self) -> None:
+        self.assertAlmostEqual(_convert_br_number("1.234,56"), 1234.56)
+        self.assertAlmostEqual(_convert_br_number("10.000,00"), 10000.0)
+        self.assertAlmostEqual(_convert_br_number("1.234.567,89"), 1234567.89)
+
+    def test_invalid_returns_none(self) -> None:
+        self.assertIsNone(_convert_br_number("abc"))
+        self.assertIsNone(_convert_br_number(""))
+
+    def test_intl_conversion(self) -> None:
+        self.assertAlmostEqual(_convert_intl_number("1.184"), 1.184)
+        self.assertAlmostEqual(_convert_intl_number("1,234.56"), 1234.56)
+        self.assertAlmostEqual(_convert_intl_number("-0.98"), -0.98)
+
+    def test_smart_convert_detects_format(self) -> None:
+        # Formato brasileiro (vírgula decimal)
+        self.assertAlmostEqual(_smart_convert_single_value("0,998"), 0.998)
+        # Formato internacional (ponto decimal)
+        self.assertAlmostEqual(_smart_convert_single_value("1.184"), 1.184)
+        # Brasileiro completo (ponto milhar, vírgula decimal)
+        self.assertAlmostEqual(_smart_convert_single_value("1.234,56"), 1234.56)
+        # Internacional completo (vírgula milhar, ponto decimal)
+        self.assertAlmostEqual(_smart_convert_single_value("1,234.56"), 1234.56)
+        # Inteiro
+        self.assertAlmostEqual(_smart_convert_single_value("42"), 42.0)
+
+    def test_column_conversion_mixed_formats(self) -> None:
+        # Simula dados misturados como no problema real
+        series = pd.Series(["0,998", "1.184", "3.498", "3,672"])
+        converted = _try_convert_column_to_numeric(series)
+        self.assertTrue(pd.api.types.is_numeric_dtype(converted))
+        self.assertAlmostEqual(converted.iloc[0], 0.998)  # BR format
+        self.assertAlmostEqual(converted.iloc[1], 1.184)  # INTL format
+        self.assertAlmostEqual(converted.iloc[2], 3.498)  # INTL format
+        self.assertAlmostEqual(converted.iloc[3], 3.672)  # BR format
+
+    def test_column_conversion_brazilian(self) -> None:
+        series = pd.Series(["0,998", "1,184", "3,498", "3,672"])
+        converted = _try_convert_column_to_numeric(series)
+        self.assertTrue(pd.api.types.is_numeric_dtype(converted))
+        self.assertAlmostEqual(converted.iloc[0], 0.998)
+        self.assertAlmostEqual(converted.iloc[1], 1.184)
+
+    def test_column_conversion_standard_numbers(self) -> None:
+        series = pd.Series(["1.5", "2.7", "3.14"])
+        converted = _try_convert_column_to_numeric(series)
+        self.assertTrue(pd.api.types.is_numeric_dtype(converted))
+        self.assertAlmostEqual(converted.iloc[0], 1.5)
+
+    def test_column_already_numeric_unchanged(self) -> None:
+        series = pd.Series([1, 2, 3])
+        converted = _try_convert_column_to_numeric(series)
+        self.assertEqual(list(converted), [1, 2, 3])
+
+    def test_column_text_stays_text(self) -> None:
+        series = pd.Series(["Reagente A", "Placa B", "Anticorpo C"])
+        converted = _try_convert_column_to_numeric(series)
+        self.assertEqual(converted.dtype, object)
+        self.assertEqual(converted.iloc[0], "Reagente A")
 
 
 class ExtractSqlTests(unittest.TestCase):
