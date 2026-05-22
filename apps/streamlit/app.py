@@ -325,13 +325,20 @@ def _render_sidebar() -> None:
         st.sidebar.error(err)
     olap_sync = st.session_state.get("last_olap_sync")
     if olap_sync is not None:
-        st.sidebar.caption(
-            f"DuckDB: {olap_sync.tables_touched} tabela(s) atualizada(s), "
-            f"{olap_sync.tables_removed} removida(s), "
-            f"{olap_sync.indexes_ensured} índice(s) de busca."
-        )
-        if olap_sync.errors:
-            st.sidebar.warning(f"OLAP: {len(olap_sync.errors)} erro(s) na ingestão.")
+        if getattr(olap_sync, "aborted_empty_scan", False):
+            st.sidebar.error(
+                "DuckDB: sincronização **abortada** — escaneamento não "
+                "encontrou planilhas, mas o banco tem tabelas. Tabelas "
+                "preservadas. Confira a raiz de projetos e escaneie de novo."
+            )
+        else:
+            st.sidebar.caption(
+                f"DuckDB: {olap_sync.tables_touched} tabela(s) atualizada(s), "
+                f"{olap_sync.tables_removed} removida(s), "
+                f"{olap_sync.indexes_ensured} índice(s) de busca."
+            )
+            if olap_sync.errors:
+                st.sidebar.warning(f"OLAP: {len(olap_sync.errors)} erro(s) na ingestão.")
 
 
 # ── Abas da UI ───────────────────────────────────────────────────────────────
@@ -958,13 +965,20 @@ def _tab_olap(scans: list[ProjectScan] | None) -> None:
                 )
                 stats = sync_tabular_from_scans(tabular_scans)
             st.session_state["last_olap_sync"] = stats
-            st.success(
-                f"{stats.tables_touched} tabela(s) criada(s)/atualizada(s), "
-                f"{stats.tables_removed} removida(s), "
-                f"{stats.indexes_ensured} índice(s) de metadados garantidos."
-            )
+            if getattr(stats, "aborted_empty_scan", False):
+                st.error(
+                    "Sincronização **abortada**: o escaneamento não encontrou "
+                    "planilhas, mas o DuckDB tem tabelas. Nenhuma tabela foi "
+                    "apagada. Confira a raiz de projetos na barra lateral."
+                )
+            else:
+                st.success(
+                    f"{stats.tables_touched} tabela(s) criada(s)/atualizada(s), "
+                    f"{stats.tables_removed} removida(s), "
+                    f"{stats.indexes_ensured} índice(s) de metadados garantidos."
+                )
             if stats.errors:
-                with st.expander("Erros de ingestão"):
+                with st.expander("Erros / avisos da ingestão"):
                     st.code("\n".join(stats.errors[:30]), language="text")
             st.rerun()
 

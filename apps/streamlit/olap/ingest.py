@@ -43,6 +43,11 @@ class IngestStats:
     tables_removed: int = 0
     files_skipped: int = 0
     indexes_ensured: int = 0
+    # True quando a sincronizacao foi abortada por seguranca porque o
+    # escaneamento nao retornou nenhum arquivo tabular E o manifesto ja
+    # tinha tabelas. Evita perder dados em caso de pasta tempor.
+    # inacessivel ou caminho digitado errado.
+    aborted_empty_scan: bool = False
     errors: list[str] = field(default_factory=list)
 
     @property
@@ -433,15 +438,51 @@ def sync_tabular_from_scans(scans: list[ProjectScan]) -> IngestStats:
 
     Arquivos novos ou com hash diferente recriam a tabela; arquivos removidos do
     inventário apagam tabela e registro no manifesto.
+
+    Salvaguarda
+    -----------
+    A sincronizacao e abortada antes da fase de poda quando:
+
+    1. O escaneamento nao retornou nenhum arquivo tabular, E
+    2. O manifesto ja tem tabelas, E
+    3. Nenhum dos projetos do manifesto aparece em ``scans``
+       (ou ``scans`` esta literalmente vazia).
+
+    A regra (3) diferencia "pasta de projetos inacessivel / caminho errado"
+    (abortar, preservar dados) de "usuario deletou todos os arquivos
+    tabulares de projetos ainda existentes" (sync normal, dropa tudo).
+
+    ``IngestStats.aborted_empty_scan`` fica ``True`` e ``errors`` recebe
+    uma mensagem explicativa.
     """
     stats = IngestStats()
     conn = open_duckdb(read_only=False)
     try:
         _ensure_manifest(conn)
         manifest = _load_manifest(conn)
+
+        tabular_files = _iter_tabular_files(scans)
+        scan_project_ids = {s.project_id for s in scans}
+        manifest_project_ids = {
+            entry["project_id"] for entry in manifest.values() if entry.get("project_id")
+        }
+        if (
+            not tabular_files
+            and manifest
+            and not manifest_project_ids.intersection(scan_project_ids)
+        ):
+            stats.aborted_empty_scan = True
+            stats.errors.append(
+                f"Escaneamento nao listou nenhum dos {len(manifest_project_ids)} projeto(s) "
+                f"presente(s) no manifesto ({len(manifest)} tabela(s) registrada(s)). "
+                "Sincronizacao abortada para preservar dados ja ingeridos. "
+                "Verifique a raiz de projetos na barra lateral e refaca o escaneamento."
+            )
+            return stats
+
         current_keys: set[str] = set()
 
-        for scanned in _iter_tabular_files(scans):
+        for scanned in tabular_files:
             path = scanned.absolute_path
             try:
                 content_hash = _file_content_hash(scanned)

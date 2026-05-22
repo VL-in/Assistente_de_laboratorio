@@ -188,6 +188,51 @@ class PipelineIntegrationTests(unittest.TestCase):
         catalog = list_ingested_tables()
         self.assertEqual(len(catalog), 0)
 
+    def test_empty_scan_with_manifest_aborts_sync(self) -> None:
+        # 1. sincroniza para popular o manifesto
+        scan = scan_project(
+            self._proj_dir,
+            extensions=frozenset({".csv", ".xlsx"}),
+            compute_hashes=True,
+        )
+        sync_tabular_from_scans([scan])
+        self.assertTrue(has_ingested_tables())
+        baseline_catalog = list_ingested_tables()
+        self.assertGreater(len(baseline_catalog), 0)
+
+        # 2. simula escaneamento vazio (pasta inacessivel / caminho errado)
+        empty_scan = scan_project(
+            Path(self._tmpdir.name) / "pasta_que_nao_existe",
+            extensions=frozenset({".csv", ".xlsx"}),
+            compute_hashes=True,
+        )
+        self.assertEqual(len(empty_scan.files), 0)
+
+        stats = sync_tabular_from_scans([empty_scan])
+        self.assertTrue(stats.aborted_empty_scan)
+        self.assertEqual(stats.tables_removed, 0)
+        self.assertEqual(stats.tables_created, 0)
+        self.assertEqual(stats.tables_updated, 0)
+        self.assertGreater(len(stats.errors), 0)
+        self.assertIn("preservar", stats.errors[0].lower())
+
+        # 3. catalogo deve estar intacto apos a tentativa abortada
+        after_catalog = list_ingested_tables()
+        self.assertEqual(len(after_catalog), len(baseline_catalog))
+
+    def test_empty_scan_without_manifest_runs_normally(self) -> None:
+        # Sem manifesto, escaneamento vazio nao precisa ser abortado
+        # (nao ha nada a perder).
+        empty_scan = scan_project(
+            Path(self._tmpdir.name) / "vazio",
+            extensions=frozenset({".csv"}),
+            compute_hashes=True,
+        )
+        stats = sync_tabular_from_scans([empty_scan])
+        self.assertFalse(stats.aborted_empty_scan)
+        self.assertEqual(stats.tables_created, 0)
+        self.assertEqual(stats.tables_removed, 0)
+
 
 class SqlValidationTests(unittest.TestCase):
     """Testes de validação SQL mais abrangentes."""
