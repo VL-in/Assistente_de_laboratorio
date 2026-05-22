@@ -25,11 +25,38 @@ from .schema_catalog import build_schema_catalog_text
 
 _MAX_RESULT_ROWS = 50
 _SQL_MAX_TOKENS = DEFAULT_SQL_MAX_TOKENS
+
+# Palavras proibidas em SELECTs de leitura. Inclui DDL/DML e administracao
+# (PRAGMA/SET/ATTACH) que poderiam alterar estado do DuckDB ou expor dados.
 _FORBIDDEN_SQL = re.compile(
-    r"\b(INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|ATTACH|COPY|EXPORT|IMPORT|"
-    r"LOAD|INSTALL|SET|PRAGMA|CALL|EXEC|EXECUTE|TRUNCATE|GRANT|REVOKE)\b",
+    r"\b(INSERT|UPDATE|DELETE|MERGE|REPLACE|UPSERT|"
+    r"DROP|CREATE|ALTER|TRUNCATE|"
+    r"ATTACH|DETACH|COPY|EXPORT|IMPORT|"
+    r"LOAD|INSTALL|SET|RESET|PRAGMA|"
+    r"CALL|EXEC|EXECUTE|"
+    r"VACUUM|CHECKPOINT|ANALYZE|"
+    r"GRANT|REVOKE)\b",
     re.IGNORECASE,
 )
+
+# Strings literais ('...' e "..."), comentarios de linha (-- ...) e de bloco
+# (/* ... */). Removidos antes da checagem de palavras proibidas para evitar
+# falsos positivos (ex.: WHERE status = 'DROP-OUT').
+_SQL_LITERAL_PATTERN = re.compile(
+    r"'(?:[^']|'')*'"        # string com aspas simples (DuckDB escapa com '')
+    r"|\"(?:[^\"]|\"\")*\""  # identificador entre aspas duplas
+    r"|--[^\n]*"             # comentario de linha
+    r"|/\*.*?\*/",           # comentario de bloco
+    re.DOTALL,
+)
+
+
+def _strip_sql_literals_and_comments(sql: str) -> str:
+    """
+    Retorna o SQL sem strings literais, identificadores entre aspas e
+    comentarios. Usado **apenas** para validacao; o SQL executado e o original.
+    """
+    return _SQL_LITERAL_PATTERN.sub(" ", sql)
 
 # Qwen3.5: desligar thinking via API (``enable_thinking=False``), não via ``/no_think``
 # no prompt — ver ``qwen35_inference.PROFILE_OLAP_SQL``.
@@ -40,11 +67,10 @@ Regras obrigatórias:
 - Use somente SELECT ou WITH ... SELECT (leitura).
 - Identifique tabelas e colunas EXCLUSIVAMENTE pelo catálogo fornecido.
 - Use aspas duplas nos nomes de tabelas quando contiverem caracteres especiais: "nome_tabela".
-- Inclua LIMIT 50 no final se a consulta puder retornar muitas linhas.
+- Inclua LIMIT 50 no final se a consulta puder retornar muitas linhas, exceto quando o usuário pedir mais linhas.
 - Não invente tabelas nem colunas que não estejam no catálogo.
 - Para filtrar por projeto, use a coluna _project_id.
 - Para filtrar por arquivo, use _source_file ou _sheet_name.
-- Não escreva tags <think> nem raciocínio intermediário; vá direto ao SQL.
 """
 
 
@@ -106,16 +132,32 @@ def _extract_sql(text: str) -> tuple[str, bool]:
 
 
 def validate_readonly_sql(sql: str) -> tuple[bool, str]:
-    """Valida que a consulta é somente leitura."""
+    """
+    Valida que a consulta é somente leitura.
+
+    Comparacoes ignoram strings literais e comentarios — uma query como
+    ``SELECT * FROM x WHERE status = 'DROP-OUT'`` NAO e bloqueada apenas
+    porque a palavra ``DROP`` aparece dentro de aspas.
+
+    Regras:
+    1. SQL nao pode ser vazio.
+    2. Apos remover whitespace e ``;`` final unico, deve comecar com
+       ``SELECT`` ou ``WITH``.
+    3. Apos remover strings/identificadores entre aspas e comentarios, nao
+       pode conter palavras proibidas (ver ``_FORBIDDEN_SQL``).
+    4. Apos remover literais e comentarios, nao pode conter ``;`` (apenas
+       uma instrucao por chamada).
+    """
     s = sql.strip().rstrip(";").strip()
     if not s:
         return False, "SQL vazio."
     upper = s.upper()
     if not (upper.startswith("SELECT") or upper.startswith("WITH")):
         return False, "Apenas SELECT ou WITH ... SELECT são permitidos."
-    if _FORBIDDEN_SQL.search(s):
+    sanitized = _strip_sql_literals_and_comments(s)
+    if _FORBIDDEN_SQL.search(sanitized):
         return False, "Comando SQL não permitido (somente leitura)."
-    if ";" in s:
+    if ";" in sanitized:
         return False, "Uma única instrução SQL por vez."
     return True, ""
 
