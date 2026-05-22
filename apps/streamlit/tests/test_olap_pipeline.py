@@ -207,10 +207,56 @@ class SqlValidationTests(unittest.TestCase):
         ok, _ = validate_readonly_sql(sql)
         self.assertTrue(ok)
 
-    def test_comment_with_drop_blocked(self) -> None:
+    def test_line_comment_with_drop_now_allowed(self) -> None:
+        # Comentários são removidos antes da checagem; o resto é só SELECT.
         sql = "SELECT 1 -- DROP TABLE x"
         ok, err = validate_readonly_sql(sql)
+        self.assertTrue(ok, err)
+
+    def test_string_literal_with_drop_keyword_allowed(self) -> None:
+        # Antes: rejeitado por causa de 'DROP' dentro do literal. Agora: ok.
+        sql = "SELECT * FROM x WHERE status = 'DROP-OUT'"
+        ok, err = validate_readonly_sql(sql)
+        self.assertTrue(ok, err)
+
+    def test_string_literal_with_semicolon_allowed(self) -> None:
+        sql = "SELECT * FROM x WHERE col = 'a;b'"
+        ok, err = validate_readonly_sql(sql)
+        self.assertTrue(ok, err)
+
+    def test_string_literal_with_set_keyword_allowed(self) -> None:
+        sql = "SELECT 'set' AS x"
+        ok, err = validate_readonly_sql(sql)
+        self.assertTrue(ok, err)
+
+    def test_block_comment_with_create_allowed(self) -> None:
+        sql = "SELECT 1 /* CREATE TABLE y AS SELECT * FROM z */"
+        ok, err = validate_readonly_sql(sql)
+        self.assertTrue(ok, err)
+
+    def test_real_drop_outside_string_still_blocked(self) -> None:
+        sql = "DROP TABLE x"
+        ok, _ = validate_readonly_sql(sql)
         self.assertFalse(ok)
+
+    def test_merge_still_blocked(self) -> None:
+        sql = 'MERGE INTO t USING s ON t.id = s.id WHEN MATCHED THEN UPDATE SET x = 1'
+        ok, _ = validate_readonly_sql(sql)
+        self.assertFalse(ok)
+
+    def test_vacuum_blocked(self) -> None:
+        ok, _ = validate_readonly_sql("VACUUM")
+        self.assertFalse(ok)
+
+    def test_pragma_blocked(self) -> None:
+        ok, _ = validate_readonly_sql("SELECT 1; PRAGMA database_size")
+        self.assertFalse(ok)
+
+    def test_double_quote_identifier_with_keyword_allowed(self) -> None:
+        # Coluna chamada "drop_reason" entre aspas duplas e identificador valido.
+        sql = 'SELECT "drop_reason" FROM "p_x"'
+        ok, err = validate_readonly_sql(sql)
+        self.assertTrue(ok, err)
 
 
 if __name__ == "__main__":
