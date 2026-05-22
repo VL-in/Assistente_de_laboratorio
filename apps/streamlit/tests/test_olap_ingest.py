@@ -284,7 +284,6 @@ class ExtractSqlTests(unittest.TestCase):
         self.assertFalse(truncated)
 
     def test_truncated_think_returns_empty_and_flag(self) -> None:
-        # Modelo gastou todos os tokens dentro do <think> sem fechar a tag.
         raw = "<think>raciocinando, mas a resposta foi cortada antes de"
         sql, truncated = _extract_sql(raw)
         self.assertEqual(sql, "")
@@ -300,6 +299,47 @@ class ExtractSqlTests(unittest.TestCase):
         sql, truncated = _extract_sql("")
         self.assertEqual(sql, "")
         self.assertFalse(truncated)
+
+    def test_ignores_select_mentioned_mid_sentence(self) -> None:
+        # SELECT no meio de frase em pt-BR nao deve ser confundido com a query.
+        raw = "Vou usar SELECT mas precisa pensar...\nSELECT * FROM y LIMIT 10"
+        sql, _ = _extract_sql(raw)
+        self.assertEqual(sql, "SELECT * FROM y LIMIT 10")
+
+    def test_trailing_semicolon_truncated(self) -> None:
+        raw = "SELECT 1 FROM x;"
+        sql, _ = _extract_sql(raw)
+        self.assertEqual(sql, "SELECT 1 FROM x")
+
+    def test_second_statement_after_semicolon_dropped(self) -> None:
+        raw = "SELECT * FROM a;\nSELECT * FROM b"
+        sql, _ = _extract_sql(raw)
+        self.assertEqual(sql, "SELECT * FROM a")
+
+    def test_semicolon_inside_string_preserved(self) -> None:
+        raw = "SELECT * FROM x WHERE col = 'a;b'"
+        sql, _ = _extract_sql(raw)
+        self.assertEqual(sql, "SELECT * FROM x WHERE col = 'a;b'")
+
+    def test_trailing_narrative_ptbr_stripped(self) -> None:
+        raw = "SELECT * FROM x LIMIT 10\nEssa consulta retorna 10 linhas."
+        sql, _ = _extract_sql(raw)
+        self.assertEqual(sql, "SELECT * FROM x LIMIT 10")
+
+    def test_trailing_narrative_enus_stripped(self) -> None:
+        raw = "SELECT 1\nThis query returns one row."
+        sql, _ = _extract_sql(raw)
+        self.assertEqual(sql, "SELECT 1")
+
+    def test_code_block_truncated_on_semicolon(self) -> None:
+        raw = "```sql\nSELECT 1; SELECT 2\n```"
+        sql, _ = _extract_sql(raw)
+        self.assertEqual(sql, "SELECT 1")
+
+    def test_with_clause_in_start_of_line_extracted(self) -> None:
+        raw = "<think>...</think>\nWITH x AS (SELECT 1) SELECT * FROM x"
+        sql, _ = _extract_sql(raw)
+        self.assertEqual(sql, "WITH x AS (SELECT 1) SELECT * FROM x")
 
 
 class ReadOnlyFunctionsTests(unittest.TestCase):
