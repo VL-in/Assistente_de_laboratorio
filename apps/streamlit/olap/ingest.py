@@ -292,12 +292,71 @@ def _load_manifest(conn: duckdb.DuckDBPyConnection) -> dict[str, dict]:
     }
 
 
+_CSV_CANDIDATE_SEPS: tuple[str, ...] = (",", ";", "\t", "|")
+
+
+def _sniff_csv_separator(path: Path, encoding: str) -> str | None:
+    """
+    Detecta o separador do CSV pelo csv.Sniffer da stdlib.
+
+    Lê só os primeiros ~64 KB para o sniffer; se falhar (arquivo pequeno,
+    sem heurística clara), retorna ``None`` e o caller tenta os candidatos.
+    """
+    import csv as _csv
+
+    try:
+        with path.open("r", encoding=encoding, errors="replace", newline="") as fh:
+            sample = fh.read(65536)
+    except OSError:
+        return None
+    if not sample.strip():
+        return None
+    try:
+        dialect = _csv.Sniffer().sniff(sample, delimiters=",;\t|")
+    except _csv.Error:
+        return None
+    sep = getattr(dialect, "delimiter", None)
+    return sep if isinstance(sep, str) and sep else None
+
+
 def _read_csv(path: Path) -> pd.DataFrame | None:
+    """
+    Lê um CSV tentando combinar encoding e separador comuns.
+
+    Estratégia (em ordem):
+    1. Para cada encoding (utf-8, utf-8-sig, latin-1), tenta o sniffer.
+    2. Se o sniffer indicou um separador, lê com ele.
+    3. Caso contrário, tenta os candidatos ``, ; \t |`` na ordem.
+    4. Aceita o resultado apenas quando o DataFrame tem **mais de uma coluna**
+       ou só uma coluna (planilha de coluna única legítima).
+
+    Aceitar a primeira tentativa com >1 coluna evita o bug onde um CSV
+    brasileiro (``a;b;c``) é lido como uma única coluna chamada ``a;b;c``.
+    """
     for enc in ("utf-8", "utf-8-sig", "latin-1"):
-        try:
-            return pd.read_csv(path, encoding=enc)
-        except Exception:
-            continue
+        sniffed = _sniff_csv_separator(path, enc)
+        seps_to_try: list[str] = []
+        if sniffed:
+            seps_to_try.append(sniffed)
+        for cand in _CSV_CANDIDATE_SEPS:
+            if cand not in seps_to_try:
+                seps_to_try.append(cand)
+        best: pd.DataFrame | None = None
+        for sep in seps_to_try:
+            try:
+                df = pd.read_csv(path, encoding=enc, sep=sep)
+            except (UnicodeDecodeError, pd.errors.ParserError, OSError):
+                continue
+            except Exception:
+                continue
+            if df is None or df.empty:
+                continue
+            if df.shape[1] > 1:
+                return df
+            if best is None:
+                best = df
+        if best is not None:
+            return best
     return None
 
 
