@@ -16,6 +16,7 @@ from .connection import (
     seed_demo_data,
 )
 from .constants import INGEST_MANIFEST_TABLE, TABULAR_EXTENSIONS
+from .indexes import ensure_indexes_for_all_ingested_tables, ensure_table_search_indexes
 from .ingest import (
     IngestStats,
     has_ingested_tables,
@@ -39,6 +40,8 @@ __all__ = [
     "duckdb_data_root",
     "duckdb_database_path",
     "duckdb_library_version",
+    "ensure_indexes_for_all_ingested_tables",
+    "ensure_table_search_indexes",
     "has_ingested_tables",
     "list_ingested_tables",
     "olap_status",

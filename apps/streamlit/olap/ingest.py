@@ -4,6 +4,9 @@ Ingestão de planilhas dos projetos para tabelas DuckDB.
 Varre os mesmos diretórios que ``projects_loader`` (via ``ProjectScan``),
 carrega ``.csv``, ``.xlsx`` e ``.xlsm`` e materializa uma tabela por aba/planilha.
 Metadados de rastreio ficam em ``_olap_ingest_manifest``.
+
+Após cada sincronização, índices DuckDB (ART) são criados nas colunas de filtro
+``_project_id``, ``_source_file`` e ``_sheet_name`` — ver ``indexes.py``.
 """
 
 from __future__ import annotations
@@ -20,6 +23,7 @@ from projects_loader import ProjectScan, ScannedFile, compute_file_sha256
 
 from .connection import open_duckdb
 from .constants import INGEST_MANIFEST_TABLE, TABULAR_EXTENSIONS
+from .indexes import ensure_indexes_for_all_ingested_tables, ensure_manifest_indexes
 
 _METADATA_COLS = ("_project_id", "_source_file", "_sheet_name")
 
@@ -38,6 +42,7 @@ class IngestStats:
     tables_updated: int = 0
     tables_removed: int = 0
     files_skipped: int = 0
+    indexes_ensured: int = 0
     errors: list[str] = field(default_factory=list)
 
     @property
@@ -255,6 +260,7 @@ def _ensure_manifest(conn: duckdb.DuckDBPyConnection) -> None:
         )
         """
     )
+    ensure_manifest_indexes(conn)
 
 
 def _load_manifest(conn: duckdb.DuckDBPyConnection) -> dict[str, dict]:
@@ -454,6 +460,7 @@ def sync_tabular_from_scans(scans: list[ProjectScan]) -> IngestStats:
             )
             stats.tables_removed += 1
 
+        stats.indexes_ensured = ensure_indexes_for_all_ingested_tables(conn)
         return stats
     finally:
         conn.close()

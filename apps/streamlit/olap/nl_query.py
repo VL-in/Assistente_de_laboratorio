@@ -12,23 +12,28 @@ from dataclasses import dataclass
 import pandas as pd
 from openai import OpenAI
 
+from qwen35_inference import (
+    DEFAULT_SQL_MAX_TOKENS,
+    PROFILE_OLAP_SQL,
+    create_chat_completion,
+    strip_thinking_blocks_with_flag,
+)
+
 from .connection import open_duckdb
 from .ingest import has_ingested_tables
 from .schema_catalog import build_schema_catalog_text
 
 _MAX_RESULT_ROWS = 50
-_SQL_MAX_TOKENS = 2048
+_SQL_MAX_TOKENS = DEFAULT_SQL_MAX_TOKENS
 _FORBIDDEN_SQL = re.compile(
     r"\b(INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|ATTACH|COPY|EXPORT|IMPORT|"
     r"LOAD|INSTALL|SET|PRAGMA|CALL|EXEC|EXECUTE|TRUNCATE|GRANT|REVOKE)\b",
     re.IGNORECASE,
 )
 
-# /no_think é uma diretiva reconhecida por modelos Qwen3 (e ignorada pelos demais)
-# que desliga o bloco <think>…</think>. Reduz drasticamente o consumo de tokens
-# e evita respostas truncadas no meio do raciocínio.
-_TEXT_TO_SQL_SYSTEM = """/no_think
-Você traduz perguntas em português para SQL DuckDB.
+# Qwen3.5: desligar thinking via API (``enable_thinking=False``), não via ``/no_think``
+# no prompt — ver ``qwen35_inference.PROFILE_OLAP_SQL``.
+_TEXT_TO_SQL_SYSTEM = """Você traduz perguntas em português para SQL DuckDB.
 
 Regras obrigatórias:
 - Retorne APENAS uma consulta SQL, sem explicação antes ou depois.
@@ -56,26 +61,8 @@ class OlapQueryResult:
 
 
 def _strip_think_blocks(text: str) -> tuple[str, bool]:
-    """
-    Remove blocos de raciocínio do LLM e indica se a resposta foi truncada.
-
-    Suporta dois cenários:
-    - Bloco fechado ``<think>...</think>`` (ou ``<reasoning>...</reasoning>``):
-      removido normalmente.
-    - Bloco aberto sem fechamento (resposta cortada por ``max_tokens`` antes de
-      o modelo terminar de pensar): tudo a partir da abertura é descartado e
-      ``truncated=True`` é retornado para que a UI explique o que aconteceu.
-    """
-    truncated = False
-    cleaned = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE)
-    cleaned = re.sub(
-        r"<reasoning>.*?</reasoning>", "", cleaned, flags=re.DOTALL | re.IGNORECASE
-    )
-    open_match = re.search(r"<think>|<reasoning>", cleaned, re.IGNORECASE)
-    if open_match:
-        truncated = True
-        cleaned = cleaned[: open_match.start()]
-    return cleaned, truncated
+    """Remove blocos de raciocínio; delega a ``qwen35_inference``."""
+    return strip_thinking_blocks_with_flag(text)
 
 
 def _extract_sql(text: str) -> tuple[str, bool]:
@@ -161,14 +148,16 @@ def generate_sql(
 
     user = f"Catálogo do banco:\n\n{catalog}\n\nPergunta do usuário:\n{question.strip()}"
     try:
-        completion = client.chat.completions.create(
-            model=model,
+        completion = create_chat_completion(
+            client,
             messages=[
                 {"role": "system", "content": _TEXT_TO_SQL_SYSTEM},
                 {"role": "user", "content": user},
             ],
+            model=model,
+            profile=PROFILE_OLAP_SQL,
             max_tokens=max_tokens,
-            temperature=0.0,
+            stream=False,
         )
         raw = (completion.choices[0].message.content or "").strip()
     except Exception as exc:  # noqa: BLE001

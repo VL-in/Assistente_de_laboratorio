@@ -31,9 +31,25 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
-from dotenv import load_dotenv
 from openai import OpenAI
 
+from llm_config import (
+    DEFAULT_LLM_BASE_URL,
+    DEFAULT_LLM_MODEL,
+    get_llm_base_url_raw,
+    get_llm_model,
+    llm_runtime_config,
+    normalize_openai_base_url,
+)
+from qwen35_inference import (
+    DEFAULT_CHAT_MAX_TOKENS,
+    create_chat_completion,
+    env_enable_thinking_default,
+    is_qwen35_model,
+    sanitize_history_message,
+    select_chat_profile,
+    strip_thinking_blocks,
+)
 from projects_loader import (
     DEFAULT_DOCUMENT_EXTENSIONS,
     ENV_PROJETOS_ROOT,
@@ -72,9 +88,6 @@ from rag import (
     txtai_data_root,
     txtai_index_path,
 )
-
-load_dotenv()
-
 
 # ── System prompt ────────────────────────────────────────────────────────────
 # Instrução base enviada ao LLM em todas as conversas. Quando o RAG está ativo,
@@ -133,40 +146,6 @@ def _parse_extensions(ext_input: str) -> frozenset[str]:
     parts = [p.strip().lower() for p in ext_input.split(",") if p.strip()]
     exts = frozenset(p if p.startswith(".") else f".{p}" for p in parts)
     return exts if exts else DEFAULT_DOCUMENT_EXTENSIONS
-
-
-def _normalize_openai_base_url(url: str) -> str:
-    """
-    Garante que a URL termine com ``/v1``, exigido pelo SDK OpenAI.
-
-    O LM Studio aceita chamadas sem o sufixo, mas o SDK Python da OpenAI
-    concatena os endpoints (``/chat/completions``, etc.) diretamente a
-    ``base_url``, portanto ``/v1`` precisa estar presente.
-    """
-    u = url.strip().rstrip("/")
-    if not u:
-        return u
-    if not u.endswith("/v1"):
-        u = f"{u}/v1"
-    return u
-
-
-def _llm_runtime_config() -> tuple[str, str, str]:
-    """
-    Retorna ``(base_url_com_v1, model_id, api_key)`` lidos do ambiente.
-
-    A ``api_key`` cai em ``"lm-studio"`` quando nenhuma variável está definida;
-    o LM Studio aceita qualquer valor não vazio nesse campo.
-    """
-    raw_base = os.environ.get("LLM_BASE_URL", "").strip()
-    base = _normalize_openai_base_url(raw_base)
-    model = os.environ.get("LLM_MODEL", "").strip()
-    key = (
-        os.environ.get("OPENAI_API_KEY", "").strip()
-        or os.environ.get("LLM_API_KEY", "").strip()
-        or "lm-studio"
-    )
-    return base, model, key
 
 
 def _is_timeout_error(exc: BaseException) -> bool:
@@ -231,7 +210,7 @@ def rag_semantic_search(query: str, limit: int) -> list[dict]:
 
 def _check_openai_compatible_models(base_url: str, *, timeout_s: float = 5.0) -> tuple[bool, str]:
     """GET {base}/v1/models — compatível com LM Studio no host."""
-    b = _normalize_openai_base_url(base_url.strip())
+    b = normalize_openai_base_url(base_url.strip())
     if not b:
         return False, "URL base vazia."
     url = f"{b}/models"
@@ -348,7 +327,8 @@ def _render_sidebar() -> None:
     if olap_sync is not None:
         st.sidebar.caption(
             f"DuckDB: {olap_sync.tables_touched} tabela(s) atualizada(s), "
-            f"{olap_sync.tables_removed} removida(s)."
+            f"{olap_sync.tables_removed} removida(s), "
+            f"{olap_sync.indexes_ensured} índice(s) de busca."
         )
         if olap_sync.errors:
             st.sidebar.warning(f"OLAP: {len(olap_sync.errors)} erro(s) na ingestão.")
@@ -716,21 +696,28 @@ def _tab_chat() -> None:
         "Opcionalmente usa **RAG** (txtai) e/ou **OLAP** (DuckDB: pergunta → SQL → dados tabulares)."
     )
 
-    base, model, api_key = _llm_runtime_config()
-    if not base or not model:
-        st.warning(
-            "Defina **`LLM_BASE_URL`** (ex.: `http://172.21.64.1:1234` ou `http://host.docker.internal:1234`) "
-            "e **`LLM_MODEL`** (ex.: `qwen/qwen3.5-9b`) no `.env` / ambiente do Compose."
-        )
-        st.info("Use a aba **Diagnóstico** para testar `GET /v1/models` antes de conversar.")
-        return
+    base, model, api_key = llm_runtime_config()
 
     st.caption(f"Servidor: `{base}` · Modelo: `{model}`")
+    if is_qwen35_model(model):
+        st.caption(
+            "Qwen3.5-MTP: modo **instruct** (sem thinking) por padrão — parâmetros do "
+            "[model card Unsloth](https://huggingface.co/unsloth/Qwen3.5-9B-MTP-GGUF). "
+            "No LM Studio, use servidor recente com MTP/speculative decoding para ~1,5–2× mais velocidade."
+        )
 
     if "chat_messages" not in st.session_state:
         st.session_state.chat_messages = []
 
-    r1, r2, r3, r4, r5 = st.columns([2, 2, 1, 2, 2])
+    r0, r1, r2, r3, r4, r5 = st.columns([2, 2, 2, 1, 2, 2])
+    with r0:
+        use_thinking = st.toggle(
+            "Modo raciocínio (thinking)",
+            value=env_enable_thinking_default(),
+            key="chat_use_thinking",
+            disabled=not is_qwen35_model(model),
+            help="Qwen3.5: gera bloco de raciocínio antes da resposta. Desligado = instruct (recomendado para RAG/documentos).",
+        )
     with r1:
         use_rag = st.toggle(
             "Usar RAG (txtai)",
@@ -759,12 +746,12 @@ def _tab_chat() -> None:
     with r4:
         max_tokens = st.number_input(
             "Max. tokens (resposta)",
-            min_value=128,
-            max_value=8192,
-            value=1024,
-            step=128,
+            min_value=256,
+            max_value=32768,
+            value=DEFAULT_CHAT_MAX_TOKENS,
+            step=256,
             key="chat_max_tokens",
-            help="Limite de tokens gerados pelo modelo. Evita respostas truncadas em modelos com default conservador.",
+            help="Qwen3.5: a documentação sugere até 32k para respostas longas; 4k é um bom padrão no MVP.",
         )
     with r5:
         use_stream = st.toggle("Resposta em streaming", value=True, key="chat_use_stream")
@@ -865,16 +852,25 @@ def _tab_chat() -> None:
         )
         api_messages = [{"role": "system", "content": system_prompt}]
         api_messages += [
-            {"role": m["role"], "content": m["content"]}
+            {
+                "role": m["role"],
+                "content": sanitize_history_message(
+                    m["role"], m["content"], model_id=model
+                ),
+            }
             for m in history_trimmed
         ]
+
+        chat_profile = select_chat_profile(model_id=model, use_thinking=use_thinking)
 
         with st.chat_message("assistant"):
             try:
                 if use_stream:
-                    stream = client.chat.completions.create(
-                        model=model,
+                    stream = create_chat_completion(
+                        client,
                         messages=api_messages,
+                        model=model,
+                        profile=chat_profile,
                         max_tokens=int(max_tokens),
                         stream=True,
                     )
@@ -888,20 +884,34 @@ def _tab_chat() -> None:
                                 yield delta.content
 
                     full_text = st.write_stream(_token_stream)
+                    answer = (
+                        strip_thinking_blocks(full_text or "")
+                        if is_qwen35_model(model)
+                        else (full_text or "")
+                    )
                     st.session_state.chat_messages.append(
-                        {"role": "assistant", "content": full_text or ""}
+                        {"role": "assistant", "content": answer}
                     )
                 else:
                     with st.spinner("Gerando resposta…"):
-                        completion = client.chat.completions.create(
-                            model=model,
+                        completion = create_chat_completion(
+                            client,
                             messages=api_messages,
+                            model=model,
+                            profile=chat_profile,
                             max_tokens=int(max_tokens),
                             stream=False,
                         )
-                    text = (completion.choices[0].message.content or "").strip()
+                    raw = (completion.choices[0].message.content or "").strip()
+                    text = (
+                        strip_thinking_blocks(raw)
+                        if is_qwen35_model(model)
+                        else raw
+                    )
                     st.markdown(text)
-                    st.session_state.chat_messages.append({"role": "assistant", "content": text})
+                    st.session_state.chat_messages.append(
+                        {"role": "assistant", "content": text}
+                    )
             except Exception as exc:
                 st.error(f"Erro ao chamar o LM Studio: {exc}")
                 if (
@@ -950,7 +960,8 @@ def _tab_olap(scans: list[ProjectScan] | None) -> None:
             st.session_state["last_olap_sync"] = stats
             st.success(
                 f"{stats.tables_touched} tabela(s) criada(s)/atualizada(s), "
-                f"{stats.tables_removed} removida(s)."
+                f"{stats.tables_removed} removida(s), "
+                f"{stats.indexes_ensured} índice(s) de metadados garantidos."
             )
             if stats.errors:
                 with st.expander("Erros de ingestão"):
@@ -1021,23 +1032,30 @@ def _tab_diagnostico(root: Path, root_ok: bool, root_msg: str) -> None:
             st.error(detail)
 
     st.subheader("LM Studio (API compatível com OpenAI)")
-    llm_base = os.environ.get("LLM_BASE_URL", "").strip()
-    llm_model = os.environ.get("LLM_MODEL", "").strip()
-    resolved_base = _normalize_openai_base_url(llm_base) if llm_base else ""
-    st.text_input("LLM_BASE_URL (somente leitura na UI)", value=llm_base or "(não definido)", disabled=True)
-    if resolved_base and resolved_base != llm_base.strip().rstrip("/"):
-        st.caption(f"URL efetiva usada pelo app (com `/v1`): `{resolved_base}`")
-    st.text_input("LLM_MODEL", value=llm_model or "(não definido)", disabled=True)
-    if llm_base:
-        if st.button("Testar GET /v1/models (timeout 5s)", key="btn_llm_ping"):
-            ok, detail = _check_openai_compatible_models(llm_base)
-            if ok:
-                st.success("Servidor respondeu. Modelos (amostra):")
-                st.code(detail, language="text")
-            else:
-                st.error(detail)
+    llm_base = get_llm_base_url_raw()
+    llm_model = get_llm_model()
+    resolved_base, _, _ = llm_runtime_config()
+    env_base = os.environ.get("LLM_BASE_URL", "").strip()
+    env_model = os.environ.get("LLM_MODEL", "").strip()
+    st.text_input("LLM_BASE_URL (efetiva)", value=llm_base, disabled=True)
+    if env_base:
+        st.caption("Origem: variável de ambiente `LLM_BASE_URL`.")
     else:
-        st.warning("Defina `LLM_BASE_URL` no ambiente (ex.: `http://host.docker.internal:1234/v1` no Docker).")
+        st.caption(f"Origem: padrão do projeto (`{DEFAULT_LLM_BASE_URL}`).")
+    if resolved_base != llm_base.rstrip("/"):
+        st.caption(f"URL usada nas chamadas (com `/v1`): `{resolved_base}`")
+    st.text_input("LLM_MODEL (efetivo)", value=llm_model, disabled=True)
+    if env_model:
+        st.caption("Origem: variável de ambiente `LLM_MODEL`.")
+    else:
+        st.caption(f"Origem: padrão do projeto (`{DEFAULT_LLM_MODEL}`).")
+    if st.button("Testar GET /v1/models (timeout 5s)", key="btn_llm_ping"):
+        ok, detail = _check_openai_compatible_models(llm_base)
+        if ok:
+            st.success("Servidor respondeu. Modelos (amostra):")
+            st.code(detail, language="text")
+        else:
+            st.error(detail)
 
 
 # ── Ponto de entrada ─────────────────────────────────────────────────────────

@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from olap.connection import open_duckdb  # noqa: E402
 from olap.ingest import (  # noqa: E402
     _convert_br_number,
     _convert_intl_number,
@@ -26,6 +27,7 @@ from olap.ingest import (  # noqa: E402
     sync_tabular_from_scans,
     table_name_for,
 )
+from olap.indexes import METADATA_FILTER_COLUMNS  # noqa: E402
 from olap.nl_query import (  # noqa: E402
     _extract_sql,
     _strip_think_blocks,
@@ -74,6 +76,30 @@ class OlapIngestTests(unittest.TestCase):
         stats3 = sync_tabular_from_scans([scan2])
         self.assertEqual(stats3.tables_removed, 1)
         self.assertNotIn(key, [])  # smoke: no exception
+
+    def test_sync_creates_metadata_indexes(self) -> None:
+        proj = Path(self._tmpdir.name) / "ProjB"
+        proj.mkdir()
+        csv_path = proj / "dados.csv"
+        pd.DataFrame({"insumo": ["A"], "qtd": [1]}).to_csv(csv_path, index=False)
+
+        scan = scan_project(proj, extensions=frozenset({".csv"}), compute_hashes=True)
+        stats = sync_tabular_from_scans([scan])
+        self.assertGreaterEqual(stats.indexes_ensured, len(METADATA_FILTER_COLUMNS))
+
+        catalog = list_ingested_tables()
+        self.assertEqual(len(catalog), 1)
+        tbl = catalog.iloc[0]["table_name"]
+
+        conn = open_duckdb(read_only=True)
+        try:
+            n_idx = conn.execute(
+                "SELECT COUNT(*) FROM duckdb_indexes() WHERE table_name = ?",
+                [tbl],
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertGreaterEqual(int(n_idx), len(METADATA_FILTER_COLUMNS))
 
 
 class NlQueryValidationTests(unittest.TestCase):
