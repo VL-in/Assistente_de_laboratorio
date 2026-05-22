@@ -19,6 +19,7 @@ from olap.ingest import (  # noqa: E402
     _convert_br_number,
     _convert_intl_number,
     _deduplicate_columns,
+    _read_csv,
     _smart_convert_single_value,
     _try_convert_column_to_numeric,
     has_ingested_tables,
@@ -203,6 +204,68 @@ class BrazilianNumberConversionTests(unittest.TestCase):
         converted = _try_convert_column_to_numeric(series)
         self.assertEqual(converted.dtype, object)
         self.assertEqual(converted.iloc[0], "Reagente A")
+
+
+class CsvSeparatorAutodetectTests(unittest.TestCase):
+    """``_read_csv`` deve detectar separador comum em planilhas BR/INTL."""
+
+    def _write(self, content: str, encoding: str = "utf-8") -> Path:
+        tmpdir = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmpdir, ignore_errors=True))
+        p = Path(tmpdir) / "data.csv"
+        p.write_text(content, encoding=encoding)
+        return p
+
+    def test_comma_separator(self) -> None:
+        p = self._write("a,b,c\n1,2,3\n4,5,6\n")
+        df = _read_csv(p)
+        self.assertIsNotNone(df)
+        assert df is not None
+        self.assertEqual(list(df.columns), ["a", "b", "c"])
+        self.assertEqual(df.shape, (2, 3))
+
+    def test_semicolon_separator_brazilian_excel(self) -> None:
+        p = self._write("a;b;c\n1;2;3\n4;5;6\n")
+        df = _read_csv(p)
+        self.assertIsNotNone(df)
+        assert df is not None
+        self.assertEqual(list(df.columns), ["a", "b", "c"])
+        self.assertEqual(df.shape, (2, 3))
+
+    def test_tab_separator(self) -> None:
+        p = self._write("a\tb\tc\n1\t2\t3\n4\t5\t6\n")
+        df = _read_csv(p)
+        self.assertIsNotNone(df)
+        assert df is not None
+        self.assertEqual(list(df.columns), ["a", "b", "c"])
+        self.assertEqual(df.shape, (2, 3))
+
+    def test_pipe_separator(self) -> None:
+        p = self._write("a|b|c\n1|2|3\n4|5|6\n")
+        df = _read_csv(p)
+        self.assertIsNotNone(df)
+        assert df is not None
+        self.assertEqual(list(df.columns), ["a", "b", "c"])
+
+    def test_single_column_no_separator(self) -> None:
+        p = self._write("nome\nAna\nBeatriz\nCarla\n")
+        df = _read_csv(p)
+        self.assertIsNotNone(df)
+        assert df is not None
+        self.assertEqual(list(df.columns), ["nome"])
+        self.assertEqual(df.shape, (3, 1))
+
+    def test_latin1_encoding_with_semicolon(self) -> None:
+        p = self._write("região;valor\nNorte;1\nSul;2\n", encoding="latin-1")
+        df = _read_csv(p)
+        self.assertIsNotNone(df)
+        assert df is not None
+        self.assertEqual(df.shape, (2, 2))
+
+    def test_empty_file_returns_none(self) -> None:
+        p = self._write("")
+        df = _read_csv(p)
+        self.assertIsNone(df)
 
 
 class ExtractSqlTests(unittest.TestCase):
