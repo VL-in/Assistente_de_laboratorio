@@ -21,7 +21,6 @@ Assistente_de_lab/
 │   ├── projects_loader.py      # Inventário: um subdiretório de 1º nível = projeto
 │   ├── rag/                    # Extração, chunking, índice txtai (upsert em lotes)
 │   └── requirements.txt
-└── apps/api/                   # FastAPI opcional (fora do caminho crítico do MVP)
 ```
 
 **Convenção de projeto:** na pasta configurada como raiz (ex.: `Projetos`), cada **subdiretório imediato** é um **projeto** (`project_id` = nome da pasta). Pastas como `planning/` ou `results/` pertencem ao mesmo projeto.
@@ -248,9 +247,3 @@ LM Studio em `127.0.0.1:1234` funciona no modo local; no Docker use `host.docker
 | Portas, volumes, env | `docker-compose.yml` |
 
 Próximas entregas (DuckDB na UI, autenticação, etc.) estão no **playbook**.
-
----
-
-## API FastAPI (`apps/api`, opcional)
-
-Serviço HTTP separado para testes ou integrações; **não** substitui o MVP principal (Streamlit no Docker). Ver `apps/api/README.md` e `apps/api/.env.example`.

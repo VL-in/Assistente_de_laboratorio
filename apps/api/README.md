@@ -1,1 +1,0 @@
-API local do assistente. Variáveis em `.env.example`. Subir com `uvicorn app.main:app --reload` a partir desta pasta. Detalhes de operação do LM Studio: [README na raiz do repositório](../../README.md).
