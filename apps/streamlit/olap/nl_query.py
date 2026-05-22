@@ -91,40 +91,115 @@ def _strip_think_blocks(text: str) -> tuple[str, bool]:
     return strip_thinking_blocks_with_flag(text)
 
 
+_SQL_STATEMENT_START = re.compile(
+    r"^[ \t]*(SELECT|WITH)\b",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+# Texto que tipicamente aparece DEPOIS do SQL na resposta do LLM (pt-BR e
+# en-US). Sao stop-patterns para cortar narrativa que vier no fim.
+_SQL_TRAILING_NARRATIVE = re.compile(
+    r"\n\s*(?:"
+    r"essa\s+consulta|esta\s+consulta|isso\s+retorna|"
+    r"o\s+resultado|a\s+query|nota[: ]|observa[çc][ãa]o|explica[çc][ãa]o|"
+    r"this\s+query|note\s*:|explanation\s*:|the\s+result|that\s+will"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _truncate_at_first_top_level_semicolon(sql: str) -> str:
+    """
+    Retorna ``sql`` ate o primeiro ``;`` fora de string literal/comentario.
+
+    DuckDB so executa uma instrucao por chamada; manter o ``;`` faria o
+    validator rejeitar com mensagem confusa. Como literais sao mais raros
+    que a forma direta, o parser e linear e simples (sem AST).
+    """
+    i = 0
+    n = len(sql)
+    while i < n:
+        ch = sql[i]
+        if ch == "'":
+            # avanca ate o proximo ' que nao seja '' (escape)
+            i += 1
+            while i < n:
+                if sql[i] == "'":
+                    if i + 1 < n and sql[i + 1] == "'":
+                        i += 2
+                        continue
+                    i += 1
+                    break
+                i += 1
+            continue
+        if ch == '"':
+            i += 1
+            while i < n and sql[i] != '"':
+                i += 1
+            i += 1
+            continue
+        if ch == "-" and i + 1 < n and sql[i + 1] == "-":
+            nl = sql.find("\n", i)
+            if nl == -1:
+                return sql[:i].rstrip()
+            i = nl + 1
+            continue
+        if ch == "/" and i + 1 < n and sql[i + 1] == "*":
+            end = sql.find("*/", i + 2)
+            if end == -1:
+                return sql[:i].rstrip()
+            i = end + 2
+            continue
+        if ch == ";":
+            return sql[:i].rstrip()
+        i += 1
+    return sql.rstrip()
+
+
+def _cut_trailing_narrative(sql: str) -> str:
+    """Corta texto explicativo apos a SQL (pt-BR e en-US)."""
+    match = _SQL_TRAILING_NARRATIVE.search(sql)
+    if match:
+        return sql[: match.start()].rstrip()
+    return sql
+
+
 def _extract_sql(text: str) -> tuple[str, bool]:
     """
     Extrai SQL da resposta do LLM.
 
-    Retorna ``(sql, truncated)``. ``truncated`` é ``True`` quando há indício de
-    que a resposta foi cortada no meio do bloco ``<think>`` (modelo gastou
-    todos os tokens raciocinando).
+    Retorna ``(sql, truncated)``. ``truncated`` e ``True`` quando ha indicio
+    de que a resposta foi cortada no meio do bloco ``<think>`` (modelo
+    gastou todos os tokens raciocinando).
 
-    Trata casos comuns:
-    - Bloco ```sql ... ```
-    - Tags <think>...</think> (modelos que pensam antes), inclusive sem fechamento
-    - Texto explicativo antes do SELECT
+    Estrategia de extracao (em ordem):
+    1. Remove blocos ``<think>``/``<reasoning>``.
+    2. Se ha ```` ```sql ... ``` ```` (ou ```` ``` ... ``` `````), retorna o
+       conteudo do primeiro bloco.
+    3. Procura ``SELECT``/``WITH`` em **inicio de linha** (re.MULTILINE),
+       captura ate o fim do texto e:
+       a. corta no primeiro ``;`` fora de string;
+       b. corta no primeiro stop-pattern de narrativa (pt-BR ou en-US).
+    4. Sem nenhuma das opcoes acima, retorna o texto compacto como esta
+       (deixa o validator decidir).
+
+    Exigir que ``SELECT``/``WITH`` esteja em inicio de linha evita confundir
+    a palavra ``SELECT`` mencionada no meio de uma frase em portugues
+    (ex.: "Vou usar SELECT mas precisa pensar...") com o inicio da query.
     """
     cleaned, truncated = _strip_think_blocks(text)
 
     block = re.search(r"```(?:sql)?\s*(.*?)```", cleaned, re.DOTALL | re.IGNORECASE)
     if block:
-        return block.group(1).strip(), truncated
+        sql = block.group(1).strip()
+        sql = _truncate_at_first_top_level_semicolon(sql)
+        return sql, truncated
 
-    match = re.search(r"(SELECT\b.*|WITH\b.*)", cleaned, re.DOTALL | re.IGNORECASE)
+    match = _SQL_STATEMENT_START.search(cleaned)
     if match:
-        sql = match.group(1).strip()
-        end_patterns = [
-            r"\n\n[A-ZÁÉÍÓÚÀÂÊÔÃÕÇ]",
-            r"\nEssa consulta",
-            r"\nEsta consulta",
-            r"\nIsso retorna",
-            r"\nO resultado",
-        ]
-        for pattern in end_patterns:
-            end_match = re.search(pattern, sql, re.IGNORECASE)
-            if end_match:
-                sql = sql[: end_match.start()].strip()
-                break
+        sql = cleaned[match.start():].strip()
+        sql = _cut_trailing_narrative(sql)
+        sql = _truncate_at_first_top_level_semicolon(sql)
         return sql, truncated
 
     lines = [ln for ln in cleaned.strip().splitlines() if ln.strip()]
