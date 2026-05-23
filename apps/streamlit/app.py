@@ -8,15 +8,14 @@ Ponto de entrada único da aplicação. Orquestra todos os subsistemas locais:
 - ``OpenAI`` (cliente SDK): conversa com o LM Studio rodando no host via API
   compatível com OpenAI.
 
-Abas da UI
-----------
-0. Início — visão geral do produto e fases do playbook.
-1. Fontes e inventário — escaneamento e tabela de documentos por projeto.
-2. Indexação RAG — construção/atualização do índice txtai com controles de chunk.
-3. Teste RAG (dev) — busca semântica direta sem passar pelo LLM.
-4. Chat — conversa com RAG + LM Studio; streaming opcional.
-5. OLAP — DuckDB: ingestão de planilhas e catálogo de tabelas.
-6. Diagnóstico — versões, caminhos, status txtai, teste de conectividade LLM.
+Abas da UI (usuário final)
+--------------------------
+0. Conversa — chat com o agente (documentos e planilhas usados automaticamente).
+1. Documentos — escanear pastas, inventário e atualização da base de conhecimento.
+
+Aba Desenvolvimento (sub-abas internas)
+---------------------------------------
+Visão geral, busca semântica, índice vetorial (parâmetros RAG), planilhas (OLAP) e diagnóstico.
 """
 
 from __future__ import annotations
@@ -41,6 +40,7 @@ from llm_config import (
     llm_runtime_config,
     normalize_openai_base_url,
 )
+from chat_router import classification_needs_llm, resolve_chat_routes
 from qwen35_inference import (
     DEFAULT_CHAT_MAX_TOKENS,
     create_chat_completion,
@@ -125,17 +125,37 @@ Sempre use a mesma língua do usuário. Por padrão, utilize português brasilei
 )
 
 st.set_page_config(
-    page_title="Assistente Lab — Agente documental",
+    page_title="Assistente Lab",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
+)
+
+# Espaçamento mais compacto para toggles na aba de desenvolvimento.
+st.markdown(
+    """
+    <style>
+    div[data-testid="stToggle"] label p { font-size: 0.85rem; margin: 0; }
+    div[data-testid="stTabs"] button { padding: 0.35rem 0.75rem; font-size: 0.9rem; }
+    </style>
+    """,
+    unsafe_allow_html=True,
 )
 
 
 # ── Helpers de configuração e conexão ───────────────────────────────────────
 
+def _project_root_override() -> str:
+    """Caminho digitado na UI (aba Documentos ou Desenvolvimento)."""
+    for key in ("path_override", "path_override_dev"):
+        value = (st.session_state.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
 def _root_from_session() -> Path:
-    """Retorna a raiz de projetos considerando o override digitado na barra lateral."""
-    override = (st.session_state.get("path_override") or "").strip()
+    """Retorna a raiz de projetos considerando o override digitado na interface."""
+    override = _project_root_override()
     if override:
         return Path(override).expanduser().resolve()
     return projetos_root_from_env()
@@ -267,78 +287,56 @@ def _trim_chat_history(messages: list[dict], max_turns: int) -> list[dict]:
 
 # ── Barra lateral ────────────────────────────────────────────────────────────
 
+def _run_project_scan(*, show_errors_in_sidebar: bool = False) -> None:
+    """Escaneia projetos, atualiza inventário na sessão e sincroniza planilhas."""
+    root = _root_from_session()
+    ok, msg = validate_projetos_root(root)
+    if not ok:
+        st.session_state["scan_error"] = msg
+        if show_errors_in_sidebar:
+            st.sidebar.error(msg)
+        return
+    st.session_state.pop("scan_error", None)
+    ext_input = str(st.session_state.get("ext_input") or "")
+    exts = _parse_extensions(ext_input)
+    compute_hashes = bool(st.session_state.get("compute_hashes", True))
+    with st.spinner("Lendo pastas e atualizando planilhas…"):
+        scans = scan_all_projects(
+            root,
+            extensions=exts,
+            compute_hashes=compute_hashes,
+        )
+        tabular_scans = scan_all_projects(
+            root,
+            extensions=TABULAR_EXTENSIONS,
+            compute_hashes=compute_hashes,
+        )
+        olap_stats = sync_tabular_from_scans(tabular_scans)
+    st.session_state["last_scan"] = scans
+    st.session_state["last_root"] = str(root)
+    st.session_state["last_exts"] = exts
+    st.session_state["last_olap_sync"] = olap_stats
+    st.rerun()
+
+
 def _render_sidebar() -> None:
-    """Renderiza os controles de escaneamento na barra lateral."""
-    st.sidebar.markdown("### Fontes locais")
+    """Barra lateral enxuta: status da sessão e atalho para Documentos."""
+    st.sidebar.markdown("### Assistente Lab")
     st.sidebar.caption(
-        "Pastas em volume (Docker) alimentam o inventário e, em seguida, a **indexação RAG**. "
-        "Cada pasta **filha direta** da raiz = um projeto (planning/results ficam no mesmo projeto)."
+        "Use a aba **Documentos** para escanear pastas e atualizar a base. "
+        "Cada subpasta na raiz é um projeto."
     )
-    default_hint = os.environ.get(ENV_PROJETOS_ROOT, "").strip() or str(projetos_root_from_env())
-    st.sidebar.text_input(
-        "Raiz dos projetos (opcional)",
-        key="path_override",
-        placeholder=default_hint,
-        help="Vazio = ASSISTENTE_PROJETOS_DIR ou padrão do ambiente/Docker.",
-    )
-    st.sidebar.checkbox(
-        "Calcular SHA-256 no escaneamento",
-        key="compute_hashes",
-        value=True,
-        help="Acelera a indexação incremental (compara hash sem reler o arquivo). Pode ser lento no escaneamento.",
-    )
-    st.sidebar.text_input(
-        "Extensões (vírgula)",
-        key="ext_input",
-        value=", ".join(sorted(DEFAULT_DOCUMENT_EXTENSIONS)),
-        help="Filtro do inventário e da futura ingestão para embeddings.",
-    )
-    if st.sidebar.button("Escanear pastas agora", type="primary"):
-        root = _root_from_session()
-        ok, msg = validate_projetos_root(root)
-        if not ok:
-            st.session_state["sidebar_scan_error"] = msg
+    scans = st.session_state.get("last_scan")
+    if scans is not None:
+        total = sum(s.file_count for s in scans)
+        st.sidebar.metric("Arquivos catalogados", total)
+        if index_ready():
+            st.sidebar.success("Base de conhecimento pronta")
         else:
-            st.session_state.pop("sidebar_scan_error", None)
-            ext_input = str(st.session_state.get("ext_input") or "")
-            exts = _parse_extensions(ext_input)
-            compute_hashes = bool(st.session_state.get("compute_hashes"))
-            with st.spinner("Lendo árvore de diretórios e sincronizando planilhas no DuckDB…"):
-                scans = scan_all_projects(
-                    root,
-                    extensions=exts,
-                    compute_hashes=compute_hashes,
-                )
-                tabular_scans = scan_all_projects(
-                    root,
-                    extensions=TABULAR_EXTENSIONS,
-                    compute_hashes=compute_hashes,
-                )
-                olap_stats = sync_tabular_from_scans(tabular_scans)
-            st.session_state["last_scan"] = scans
-            st.session_state["last_root"] = str(root)
-            st.session_state["last_exts"] = exts
-            st.session_state["last_olap_sync"] = olap_stats
-            st.rerun()
-    err = st.session_state.get("sidebar_scan_error")
+            st.sidebar.info("Atualize a base em Documentos")
+    err = st.session_state.get("scan_error")
     if err:
         st.sidebar.error(err)
-    olap_sync = st.session_state.get("last_olap_sync")
-    if olap_sync is not None:
-        if getattr(olap_sync, "aborted_empty_scan", False):
-            st.sidebar.error(
-                "DuckDB: sincronização **abortada** — escaneamento não "
-                "encontrou planilhas, mas o banco tem tabelas. Tabelas "
-                "preservadas. Confira a raiz de projetos e escaneie de novo."
-            )
-        else:
-            st.sidebar.caption(
-                f"DuckDB: {olap_sync.tables_touched} tabela(s) atualizada(s), "
-                f"{olap_sync.tables_removed} removida(s), "
-                f"{olap_sync.indexes_ensured} índice(s) de busca."
-            )
-            if olap_sync.errors:
-                st.sidebar.warning(f"OLAP: {len(olap_sync.errors)} erro(s) na ingestão.")
 
 
 # ── Abas da UI ───────────────────────────────────────────────────────────────
@@ -378,8 +376,125 @@ def _tab_inicio() -> None:
         )
 
 
+def _tab_documentos(root: Path, root_ok: bool, root_msg: str) -> None:
+    """Aba do usuário — escanear pastas, ver inventário e atualizar a base de conhecimento."""
+    st.header("Documentos")
+    st.caption(
+        "Coloque os arquivos nas pastas de projeto no computador (ou volume Docker), "
+        "escaneie para ver o que foi encontrado e atualize a base para o assistente usar no chat."
+    )
+
+    st.subheader("1. Pasta dos projetos")
+    default_hint = os.environ.get(ENV_PROJETOS_ROOT, "").strip() or str(projetos_root_from_env())
+    st.text_input(
+        "Caminho da pasta raiz (opcional)",
+        key="path_override",
+        placeholder=default_hint,
+        help="Deixe vazio para usar o caminho configurado no servidor.",
+    )
+    if not root_ok:
+        st.error(root_msg)
+        st.info(
+            f"Ajuste o caminho acima ou peça ao administrador para configurar `{ENV_PROJETOS_ROOT}`."
+        )
+        return
+
+    scan_col, _ = st.columns([1, 3])
+    with scan_col:
+        if st.button("Escanear pastas", type="primary", key="btn_scan_documentos"):
+            _run_project_scan()
+    err = st.session_state.get("scan_error")
+    if err:
+        st.error(err)
+
+    scans: list[ProjectScan] | None = st.session_state.get("last_scan")
+    if scans is None:
+        st.info("Nenhum escaneamento nesta sessão. Clique em **Escanear pastas** para começar.")
+        return
+
+    st.subheader("2. Arquivos encontrados")
+    last_root_raw = (st.session_state.get("last_root") or "").strip()
+    if last_root_raw:
+        try:
+            if Path(last_root_raw).resolve() != root.resolve():
+                st.warning(
+                    "O caminho da pasta mudou desde o último escaneamento. "
+                    "Escaneie de novo para atualizar a lista."
+                )
+        except OSError:
+            pass
+
+    total_files = sum(s.file_count for s in scans)
+    m1, m2 = st.columns(2)
+    m1.metric("Projetos", len(scans))
+    m2.metric("Arquivos", total_files)
+
+    if not scans:
+        st.info("Nenhuma subpasta de projeto encontrada nesta raiz.")
+        return
+
+    records = []
+    for s in scans:
+        for f in s.files:
+            records.append(
+                {
+                    "projeto": f.project_id,
+                    "arquivo": f.relative_path,
+                    "tamanho (bytes)": f.size_bytes,
+                }
+            )
+    df = pd.DataFrame.from_records(records)
+    options = sorted({s.project_id for s in scans})
+    selected = st.multiselect(
+        "Filtrar por projeto",
+        options=options,
+        default=options,
+        key="docs_filter_projects",
+    )
+    active_projects = selected if selected else options
+    df = df[df["projeto"].isin(active_projects)]
+    st.dataframe(df, use_container_width=True, hide_index=True)
+
+    st.subheader("3. Atualizar base de conhecimento")
+    if not index_ready():
+        st.caption("Ainda não há base indexada — a primeira atualização pode levar alguns minutos.")
+    else:
+        st.caption(
+            "Somente arquivos novos ou alterados são reprocessados (comparação por impressão digital)."
+        )
+
+    if st.button("Atualizar base agora", type="primary", key="btn_update_knowledge"):
+        with st.spinner("Preparando documentos para o assistente…"):
+            stats = build_index(
+                scans,
+                project_ids=None,
+                max_chars=520,
+                overlap=80,
+                max_doc_chars=2_000_000,
+                batch_size=64,
+                replace_existing=not index_ready(),
+                progress=lambda msg: None,
+            )
+        _txtai_backend_cached.clear()
+        st.session_state["last_index_stats"] = stats
+        if stats.incremental:
+            st.success(
+                f"Base atualizada — {stats.chunks_written} trecho(s) novo(s), "
+                f"{stats.files_skipped_unchanged} arquivo(s) sem alteração."
+            )
+        else:
+            st.success(
+                f"Base criada — {stats.chunks_written} trecho(s) de "
+                f"{stats.files_extracted} arquivo(s)."
+            )
+        if stats.errors:
+            with st.expander("Avisos durante a atualização"):
+                st.code("\n".join(stats.errors[:50]), language="text")
+        st.rerun()
+
+
 def _tab_fontes(root: Path, root_ok: bool, root_msg: str) -> None:
-    """Aba 1 — Tabela do inventário de documentos por projeto."""
+    """Inventário técnico (desenvolvimento) — tabela com hash e metadados."""
     st.header("Fontes e inventário")
     st.caption(
         "Módulo `projects_loader`: descobre projetos e arquivos que alimentarão a **indexação para RAG** "
@@ -395,7 +510,7 @@ def _tab_fontes(root: Path, root_ok: bool, root_msg: str) -> None:
     scans: list[ProjectScan] | None = st.session_state.get("last_scan")
     if scans is None:
         st.warning("Ainda não há escaneamento nesta sessão.")
-        st.markdown("Use **Escanear pastas agora** na barra lateral para carregar o inventário.")
+        st.markdown("Use **Escanear pastas** na aba **Documentos** para carregar o inventário.")
         return
 
     last_root_raw = (st.session_state.get("last_root") or "").strip()
@@ -442,7 +557,12 @@ def _tab_fontes(root: Path, root_ok: bool, root_msg: str) -> None:
             )
     df = pd.DataFrame.from_records(records)
     options = sorted({s.project_id for s in scans})
-    selected = st.multiselect("Filtrar por projeto", options=options, default=options)
+    selected = st.multiselect(
+        "Filtrar por projeto",
+        options=options,
+        default=options,
+        key="dev_fontes_filter_projects",
+    )
     # Se o usuário desmarcar tudo, tratamos como "todos" (evita tabela vazia com listagem cheia).
     active_projects = selected if selected else options
     df = df[df["projeto"].isin(active_projects)]
@@ -479,7 +599,7 @@ def _tab_indexacao_rag(scans: list[ProjectScan] | None) -> None:
     )
 
     if scans is None:
-        st.warning("Faça um escaneamento na aba **Fontes e inventário** (barra lateral) antes de indexar.")
+        st.warning("Faça um escaneamento na aba **Documentos** antes de indexar.")
         return
     if not scans:
         st.info("Inventário vazio — nada para indexar.")
@@ -505,6 +625,7 @@ def _tab_indexacao_rag(scans: list[ProjectScan] | None) -> None:
         options=options,
         default=options,
         help="Vazio = todos os projetos listados.",
+        key="dev_rag_index_projects",
     )
     project_filter = set(selected) if selected else None
 
@@ -517,6 +638,7 @@ def _tab_indexacao_rag(scans: list[ProjectScan] | None) -> None:
             value=520,
             step=20,
             help="O modelo MPNet usa até ~128 tokens; ~520 caracteres é um valor seguro para pt-BR.",
+            key="dev_rag_chunk_chars",
         )
     with c2:
         overlap = st.number_input(
@@ -525,6 +647,7 @@ def _tab_indexacao_rag(scans: list[ProjectScan] | None) -> None:
             max_value=800,
             value=80,
             step=10,
+            key="dev_rag_chunk_overlap",
         )
     with c3:
         batch_size = st.number_input(
@@ -533,6 +656,7 @@ def _tab_indexacao_rag(scans: list[ProjectScan] | None) -> None:
             max_value=512,
             value=64,
             step=8,
+            key="dev_rag_batch_size",
         )
 
     max_doc = st.number_input(
@@ -542,6 +666,7 @@ def _tab_indexacao_rag(scans: list[ProjectScan] | None) -> None:
         value=2_000_000,
         step=100_000,
         help="Evita carregar PDF/planilhas enormes inteiros na memória.",
+        key="dev_rag_max_doc_chars",
     )
 
     # Desmarca automaticamente após a primeira indexação bem-sucedida, pois o
@@ -551,6 +676,7 @@ def _tab_indexacao_rag(scans: list[ProjectScan] | None) -> None:
         "Substituir índice existente",
         value=replace_default,
         help="Apaga índice e manifesto e reconstrói tudo. Desmarque para **reindexação incremental por hash**.",
+        key="dev_rag_replace_index",
     )
     if not replace and index_ready():
         st.caption(
@@ -652,11 +778,15 @@ def _tab_rag_dev() -> None:
     )
 
     if not index_ready():
-        st.warning("Construa um índice na aba **Indexação RAG** antes de testar buscas.")
+        st.warning("Construa um índice na aba **Documentos** ou em **Índice vetorial** (dev) antes de testar.")
         return
 
-    q = st.text_input("Consulta semântica", placeholder="Ex.: validade do reagente X no projeto ELISA")
-    top_k = st.slider("Top-K", min_value=1, max_value=25, value=8)
+    q = st.text_input(
+        "Consulta semântica",
+        placeholder="Ex.: validade do reagente X no projeto ELISA",
+        key="dev_rag_search_query",
+    )
+    top_k = st.slider("Top-K", min_value=1, max_value=25, value=8, key="dev_rag_search_top_k")
 
     if st.button("Executar busca", type="primary", key="btn_rag_dev_search"):
         if not q.strip():
@@ -680,129 +810,169 @@ def _tab_rag_dev() -> None:
                             st.json(h)
 
 
-def _tab_chat() -> None:
+def _chat_effective_options() -> dict:
     """
-    Aba 4 — Chat com o LLM com injeção opcional de contexto RAG.
+    Parâmetros efetivos do chat.
 
-    Estratégia de RAG
-    -----------------
-    O contexto recuperado é injetado no **system prompt** (não na mensagem do
-    usuário). Isso preserva o papel e as restrições definidas em
-    ``CHAT_SYSTEM_PROMPT`` e sinaliza claramente ao modelo que o contexto é
-    evidência documental, não instrução do usuário.
-
-    Erro na chamada LLM
-    -------------------
-    Em caso de exceção, a última mensagem do usuário é removida do histórico
-    em sessão. Isso permite que o usuário reenvie a mensagem após corrigir a
-    configuração do servidor, sem duplicar a pergunta no histórico.
+    Na aba Conversa, documentos e planilhas são usados automaticamente quando
+    disponíveis. A aba Desenvolvimento pode sobrescrever via ``dev_chat_*``.
     """
-    st.header("Chat com o agente")
+    dev_override = st.session_state.get("dev_chat_override", False)
+    use_rag = (
+        bool(st.session_state.get("dev_chat_use_rag", True))
+        if dev_override
+        else index_ready()
+    )
+    use_olap = (
+        bool(st.session_state.get("dev_chat_use_olap", True))
+        if dev_override
+        else has_ingested_tables()
+    )
+    return {
+        "use_rag": use_rag and index_ready(),
+        "use_olap": use_olap and has_ingested_tables(),
+        "rag_top_k": int(st.session_state.get("dev_chat_rag_top_k", 6)),
+        "max_tokens": int(st.session_state.get("dev_chat_max_tokens", DEFAULT_CHAT_MAX_TOKENS)),
+        "max_history_turns": int(st.session_state.get("dev_chat_max_history_turns", 8)),
+        "use_thinking": bool(st.session_state.get("dev_chat_use_thinking", env_enable_thinking_default())),
+        "use_stream": bool(st.session_state.get("chat_use_stream", True)),
+    }
+
+
+def _tab_chat_dev_controls() -> None:
+    """Controles avançados do chat (aba Desenvolvimento)."""
+    st.subheader("Parâmetros do chat")
     st.caption(
-        "Conversa com o modelo **LM Studio** (API OpenAI-compatible). "
-        "Opcionalmente usa **RAG** (txtai) e/ou **OLAP** (DuckDB: pergunta → SQL → dados tabulares)."
+        "Com *configuração manual*, os toggles substituem o roteador LLM. "
+        "Sem isso, um classificador leve decide se cada mensagem consulta documentos/planilhas."
+    )
+    base, model, _ = llm_runtime_config()
+    st.caption(f"Servidor: `{base}` · Modelo: `{model}`")
+
+    st.toggle(
+        "Usar configuração manual",
+        key="dev_chat_override",
+        help="Desligado: documentos e planilhas entram automaticamente quando existirem.",
     )
 
-    base, model, api_key = llm_runtime_config()
-
-    st.caption(f"Servidor: `{base}` · Modelo: `{model}`")
-    if is_qwen35_model(model):
-        st.caption(
-            "Qwen3.5-MTP: modo **instruct** (sem thinking) por padrão — parâmetros do "
-            "[model card Unsloth](https://huggingface.co/unsloth/Qwen3.5-9B-MTP-GGUF). "
-            "No LM Studio, use servidor recente com MTP/speculative decoding para ~1,5–2× mais velocidade."
+    c0, c1, c2, c3 = st.columns(4)
+    with c0:
+        st.toggle(
+            "Documentos",
+            value=True,
+            key="dev_chat_use_rag",
+            disabled=not st.session_state.get("dev_chat_override"),
         )
+    with c1:
+        st.toggle(
+            "Planilhas",
+            value=True,
+            key="dev_chat_use_olap",
+            disabled=not st.session_state.get("dev_chat_override"),
+        )
+    with c2:
+        st.toggle(
+            "Raciocínio",
+            value=env_enable_thinking_default(),
+            key="dev_chat_use_thinking",
+            disabled=not is_qwen35_model(model) or not st.session_state.get("dev_chat_override"),
+        )
+    with c3:
+        st.toggle("Streaming", value=True, key="chat_use_stream")
+
+    c4, c5, c6 = st.columns(3)
+    with c4:
+        st.number_input("Trechos", 1, 20, 6, key="dev_chat_rag_top_k")
+    with c5:
+        st.number_input("Máx. tokens", 256, 32768, DEFAULT_CHAT_MAX_TOKENS, step=256, key="dev_chat_max_tokens")
+    with c6:
+        st.number_input("Turnos no histórico", 1, 30, 8, key="dev_chat_max_history_turns")
+
+
+def _tab_chat() -> None:
+    """
+    Aba principal — conversa com o agente.
+
+    O contexto de documentos/planilhas é injetado no system prompt quando
+    disponível, sem expor parâmetros técnicos ao usuário final.
+    """
+    st.header("Conversa")
+    st.caption("Pergunte sobre experimentos, insumos e resultados documentados no laboratório.")
+
+    base, model, api_key = llm_runtime_config()
+    opts = _chat_effective_options()
+    use_rag = opts["use_rag"]
+    use_olap = opts["use_olap"]
+    rag_top_k = opts["rag_top_k"]
+    max_tokens = opts["max_tokens"]
+    max_history_turns = opts["max_history_turns"]
+    use_thinking = opts["use_thinking"]
+    use_stream = opts["use_stream"]
 
     if "chat_messages" not in st.session_state:
         st.session_state.chat_messages = []
 
-    r0, r1, r2, r3, r4, r5 = st.columns([2, 2, 2, 1, 2, 2])
-    with r0:
-        use_thinking = st.toggle(
-            "Modo raciocínio (thinking)",
-            value=env_enable_thinking_default(),
-            key="chat_use_thinking",
-            disabled=not is_qwen35_model(model),
-            help="Qwen3.5: gera bloco de raciocínio antes da resposta. Desligado = instruct (recomendado para RAG/documentos).",
-        )
-    with r1:
-        use_rag = st.toggle(
-            "Usar RAG (txtai)",
-            value=index_ready(),
-            disabled=not index_ready(),
-            key="chat_use_rag",
-            help="Recupera trechos do índice com a pergunta atual e envia como contexto ao modelo.",
-        )
-    with r2:
-        use_olap = st.toggle(
-            "Consultar DuckDB (OLAP)",
-            value=has_ingested_tables(),
-            disabled=not has_ingested_tables(),
-            key="chat_use_olap",
-            help="Traduz a pergunta em SQL read-only, executa no DuckDB e injeta o resultado no contexto.",
-        )
-    with r3:
-        rag_top_k = st.number_input(
-            "Trechos RAG",
-            min_value=1,
-            max_value=20,
-            value=6,
-            key="chat_rag_top_k",
-            disabled=not use_rag,
-        )
-    with r4:
-        max_tokens = st.number_input(
-            "Max. tokens (resposta)",
-            min_value=256,
-            max_value=32768,
-            value=DEFAULT_CHAT_MAX_TOKENS,
-            step=256,
-            key="chat_max_tokens",
-            help="Qwen3.5: a documentação sugere até 32k para respostas longas; 4k é um bom padrão no MVP.",
-        )
-    with r5:
-        use_stream = st.toggle("Resposta em streaming", value=True, key="chat_use_stream")
-
-    col_hist, _ = st.columns([2, 3])
-    with col_hist:
-        max_history_turns = st.number_input(
-            "Turnos no histórico enviado ao modelo",
-            min_value=1,
-            max_value=30,
-            value=8,
-            step=1,
-            key="chat_max_history_turns",
-            help="Limita quantos pares de mensagens (user + assistente) são incluídos no prompt. "
-                 "Reduz o tamanho total do contexto enviado e evita exceder a janela do modelo.",
-        )
-
-    if use_rag and not index_ready():
-        st.warning("Índice txtai indisponível. Construa em **Indexação RAG** ou desative o RAG.")
-    if use_olap and not has_ingested_tables():
-        st.warning(
-            "Nenhuma planilha no DuckDB. Use **Escanear pastas agora** na barra lateral "
-            f"(ingere automaticamente {', '.join(sorted(TABULAR_EXTENSIONS))})."
-        )
-
-    c1, c2 = st.columns([1, 4])
-    with c1:
-        if st.button("Limpar conversa", key="btn_clear_chat"):
+    status_a, status_b, actions = st.columns([2, 2, 1])
+    with status_a:
+        if index_ready():
+            st.caption("Documentos prontos para consulta")
+        else:
+            st.caption("Atualize os documentos na aba **Documentos**")
+    with status_b:
+        if has_ingested_tables():
+            st.caption("Planilhas disponíveis para consulta")
+        else:
+            st.caption("Nenhuma planilha indexada ainda")
+    with actions:
+        if st.button("Limpar", key="btn_clear_chat", use_container_width=True):
             st.session_state.chat_messages = []
             st.rerun()
 
-    for msg in st.session_state.chat_messages:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
+    chat_box = st.container(height=460, border=True)
+    prompt = st.chat_input("Escreva sua pergunta…")
 
-    if prompt := st.chat_input("Envie uma mensagem para o modelo…"):
+    if not prompt:
+        with chat_box:
+            if not st.session_state.chat_messages:
+                st.markdown(
+                    "_Nenhuma mensagem ainda. Use o campo abaixo para começar a conversa._"
+                )
+            for msg in st.session_state.chat_messages:
+                with st.chat_message(msg["role"]):
+                    st.markdown(msg["content"])
+
+    if prompt:
         st.session_state.chat_messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
+        show_dev_details = bool(st.session_state.get("dev_chat_override"))
 
         client = OpenAI(base_url=base, api_key=api_key, timeout=120.0)
 
+        history_before = st.session_state.chat_messages[:-1]
+        _route_kwargs = dict(
+            message=prompt,
+            history=history_before,
+            client=client,
+            model=model,
+            documents_enabled=use_rag and index_ready(),
+            spreadsheets_enabled=use_olap and has_ingested_tables(),
+            manual_override=show_dev_details,
+        )
+        needs_llm_router = not show_dev_details and classification_needs_llm(prompt)
+        if needs_llm_router:
+            with st.spinner("Analisando pergunta…"):
+                route = resolve_chat_routes(**_route_kwargs)
+        else:
+            route = resolve_chat_routes(**_route_kwargs)
+        run_rag = route.use_documents
+        run_olap = route.use_spreadsheets
+        if show_dev_details:
+            st.caption(
+                f"Roteador ({route.source}): documentos={'sim' if run_rag else 'não'} · "
+                f"planilhas={'sim' if run_olap else 'não'}"
+            )
+
         system_prompt = CHAT_SYSTEM_PROMPT
-        if use_rag and index_ready():
+        if run_rag:
             hits = rag_semantic_search(prompt, int(rag_top_k))
             ctx = format_context_for_llm(hits)
             if ctx:
@@ -819,8 +989,8 @@ def _tab_chat() -> None:
                 )
 
         olap_result = None
-        if use_olap and has_ingested_tables():
-            with st.spinner("Consultando DuckDB (linguagem natural → SQL)…"):
+        if run_olap:
+            with st.spinner("Consultando planilhas…"):
                 olap_result = run_nl_olap_query(prompt, client=client, model=model)
             if olap_result.ok and olap_result.context_for_llm:
                 system_prompt += "\n\n" + olap_result.context_for_llm
@@ -828,29 +998,26 @@ def _tab_chat() -> None:
                     "\n\nAo responder com dados tabulares acima, cite projeto (_project_id) "
                     "e arquivo (_source_file). Não invente valores fora do resultado SQL."
                 )
-                with st.expander("OLAP: SQL gerado e dados retornados", expanded=False):
-                    if olap_result.sql:
-                        st.code(olap_result.sql, language="sql")
-                    if olap_result.dataframe is not None:
-                        st.caption(f"{len(olap_result.dataframe)} linha(s)")
-                        st.dataframe(
-                            olap_result.dataframe,
-                            use_container_width=True,
-                            hide_index=True,
-                        )
+                if show_dev_details:
+                    with st.expander("SQL e dados (dev)", expanded=False):
+                        if olap_result.sql:
+                            st.code(olap_result.sql, language="sql")
+                        if olap_result.dataframe is not None:
+                            st.dataframe(
+                                olap_result.dataframe,
+                                use_container_width=True,
+                                hide_index=True,
+                            )
             elif olap_result.error:
-                st.warning(f"OLAP: {olap_result.error}")
-                with st.expander("Diagnóstico do OLAP (SQL e resposta do LLM)", expanded=False):
-                    if olap_result.sql:
-                        st.markdown("**SQL gerado (com erro):**")
-                        st.code(olap_result.sql, language="sql")
-                    if olap_result.raw_llm_response:
-                        st.markdown("**Resposta bruta do LLM:**")
-                        st.code(olap_result.raw_llm_response, language="text")
-                    else:
-                        st.caption("O LLM não retornou conteúdo nesta requisição.")
+                if show_dev_details:
+                    st.warning(f"Planilhas: {olap_result.error}")
+                    with st.expander("Detalhe da consulta (dev)", expanded=False):
+                        if olap_result.sql:
+                            st.code(olap_result.sql, language="sql")
+                        if olap_result.raw_llm_response:
+                            st.code(olap_result.raw_llm_response, language="text")
                 system_prompt += (
-                    f"\n\n### OLAP (falha na consulta tabular)\n{olap_result.error}\n"
+                    f"\n\n### Dados tabulares (falha na consulta)\n{olap_result.error}\n"
                     "Explique o problema ao usuário sem inventar números de planilhas."
                 )
 
@@ -868,68 +1035,124 @@ def _tab_chat() -> None:
             for m in history_trimmed
         ]
 
-        chat_profile = select_chat_profile(model_id=model, use_thinking=use_thinking)
+        chat_profile = select_chat_profile(model_id=model, use_thinking=use_thinking and is_qwen35_model(model))
 
-        with st.chat_message("assistant"):
-            try:
-                if use_stream:
-                    stream = create_chat_completion(
-                        client,
-                        messages=api_messages,
-                        model=model,
-                        profile=chat_profile,
-                        max_tokens=int(max_tokens),
-                        stream=True,
-                    )
-
-                    def _token_stream():
-                        for chunk in stream:
-                            if not chunk.choices:
-                                continue
-                            delta = chunk.choices[0].delta
-                            if delta and delta.content:
-                                yield delta.content
-
-                    full_text = st.write_stream(_token_stream)
-                    answer = (
-                        strip_thinking_blocks(full_text or "")
-                        if is_qwen35_model(model)
-                        else (full_text or "")
-                    )
-                    st.session_state.chat_messages.append(
-                        {"role": "assistant", "content": answer}
-                    )
-                else:
-                    with st.spinner("Gerando resposta…"):
-                        completion = create_chat_completion(
+        with chat_box:
+            for msg in st.session_state.chat_messages:
+                with st.chat_message(msg["role"]):
+                    st.markdown(msg["content"])
+            with st.chat_message("assistant"):
+                try:
+                    if use_stream:
+                        stream = create_chat_completion(
                             client,
                             messages=api_messages,
                             model=model,
                             profile=chat_profile,
                             max_tokens=int(max_tokens),
-                            stream=False,
+                            stream=True,
                         )
-                    raw = (completion.choices[0].message.content or "").strip()
-                    text = (
-                        strip_thinking_blocks(raw)
-                        if is_qwen35_model(model)
-                        else raw
+
+                        def _token_stream():
+                            for chunk in stream:
+                                if not chunk.choices:
+                                    continue
+                                delta = chunk.choices[0].delta
+                                if delta and delta.content:
+                                    yield delta.content
+
+                        full_text = st.write_stream(_token_stream)
+                        answer = (
+                            strip_thinking_blocks(full_text or "")
+                            if is_qwen35_model(model)
+                            else (full_text or "")
+                        )
+                        st.session_state.chat_messages.append(
+                            {"role": "assistant", "content": answer}
+                        )
+                    else:
+                        with st.spinner("Gerando resposta…"):
+                            completion = create_chat_completion(
+                                client,
+                                messages=api_messages,
+                                model=model,
+                                profile=chat_profile,
+                                max_tokens=int(max_tokens),
+                                stream=False,
+                            )
+                        raw = (completion.choices[0].message.content or "").strip()
+                        text = (
+                            strip_thinking_blocks(raw)
+                            if is_qwen35_model(model)
+                            else raw
+                        )
+                        st.markdown(text)
+                        st.session_state.chat_messages.append(
+                            {"role": "assistant", "content": text}
+                        )
+                except Exception as exc:
+                    st.error(f"Não foi possível obter resposta do assistente: {exc}")
+                    if (
+                        st.session_state.chat_messages
+                        and st.session_state.chat_messages[-1].get("role") == "user"
+                    ):
+                        st.session_state.chat_messages.pop()
+                    st.caption(
+                        "A última mensagem foi removida; verifique o servidor de IA e tente de novo."
                     )
-                    st.markdown(text)
-                    st.session_state.chat_messages.append(
-                        {"role": "assistant", "content": text}
-                    )
-            except Exception as exc:
-                st.error(f"Erro ao chamar o LM Studio: {exc}")
-                if (
-                    st.session_state.chat_messages
-                    and st.session_state.chat_messages[-1].get("role") == "user"
-                ):
-                    st.session_state.chat_messages.pop()
-                st.caption(
-                    "A última mensagem sua foi removida do histórico; "
-                    "ajuste o servidor ou o modelo e tente de novo."
-                )
+
+
+def _tab_desenvolvimento(
+    root: Path,
+    root_ok: bool,
+    root_msg: str,
+    scans: list[ProjectScan] | None,
+) -> None:
+    """Aba única para time técnico — sub-abas com ferramentas de diagnóstico e tuning."""
+    st.header("Desenvolvimento")
+    st.caption("Ferramentas para administradores e desenvolvedores. O usuário final não precisa desta aba.")
+
+    dev_tabs = st.tabs(
+        [
+            "Visão geral",
+            "Parâmetros do chat",
+            "Busca semântica",
+            "Índice vetorial",
+            "Planilhas",
+            "Diagnóstico",
+        ]
+    )
+    with dev_tabs[0]:
+        _tab_inicio()
+        st.divider()
+        st.subheader("Escaneamento técnico")
+        default_hint = os.environ.get(ENV_PROJETOS_ROOT, "").strip() or str(projetos_root_from_env())
+        st.text_input(
+            "Raiz dos projetos (override)",
+            key="path_override_dev",
+            placeholder=default_hint,
+            help="Mesmo campo da aba Documentos; use um dos dois.",
+        )
+        st.checkbox("Calcular SHA-256 no escaneamento", key="compute_hashes", value=True)
+        st.text_input(
+            "Extensões (vírgula)",
+            key="ext_input",
+            value=", ".join(sorted(DEFAULT_DOCUMENT_EXTENSIONS)),
+        )
+        if st.button("Escanear (dev)", key="btn_scan_dev"):
+            _run_project_scan()
+    with dev_tabs[1]:
+        _tab_chat_dev_controls()
+    with dev_tabs[2]:
+        _tab_rag_dev()
+    with dev_tabs[3]:
+        _tab_indexacao_rag(scans)
+    with dev_tabs[4]:
+        _tab_olap(scans)
+    with dev_tabs[5]:
+        _tab_diagnostico(root, root_ok, root_msg)
+        st.divider()
+        _tab_fontes(root, root_ok, root_msg)
 
 
 def _tab_olap(scans: list[ProjectScan] | None) -> None:
@@ -937,7 +1160,7 @@ def _tab_olap(scans: list[ProjectScan] | None) -> None:
     st.header("Dados tabulares (OLAP)")
     st.caption(
         f"Ingestão automática de **{', '.join(sorted(TABULAR_EXTENSIONS))}** ao escanear pastas "
-        "(barra lateral). No **Chat**, ative *Consultar DuckDB* para perguntas em linguagem natural."
+        "(aba **Documentos**). Na **Conversa**, planilhas são consultadas automaticamente."
     )
 
     status = olap_status()
@@ -953,7 +1176,7 @@ def _tab_olap(scans: list[ProjectScan] | None) -> None:
         )
 
     if scans is None:
-        st.warning("Faça **Escanear pastas agora** na barra lateral para ingerir planilhas.")
+        st.warning("Faça **Escanear pastas** na aba **Documentos** (ou em Desenvolvimento) para ingerir planilhas.")
     else:
         if st.button("Sincronizar planilhas com DuckDB agora", type="primary", key="btn_olap_sync"):
             root = _root_from_session()
@@ -1051,14 +1274,24 @@ def _tab_diagnostico(root: Path, root_ok: bool, root_msg: str) -> None:
     resolved_base, _, _ = llm_runtime_config()
     env_base = os.environ.get("LLM_BASE_URL", "").strip()
     env_model = os.environ.get("LLM_MODEL", "").strip()
-    st.text_input("LLM_BASE_URL (efetiva)", value=llm_base, disabled=True)
+    st.text_input(
+        "LLM_BASE_URL (efetiva)",
+        value=llm_base,
+        disabled=True,
+        key="dev_diag_llm_base_url",
+    )
     if env_base:
         st.caption("Origem: variável de ambiente `LLM_BASE_URL`.")
     else:
         st.caption(f"Origem: padrão do projeto (`{DEFAULT_LLM_BASE_URL}`).")
     if resolved_base != llm_base.rstrip("/"):
         st.caption(f"URL usada nas chamadas (com `/v1`): `{resolved_base}`")
-    st.text_input("LLM_MODEL (efetivo)", value=llm_model, disabled=True)
+    st.text_input(
+        "LLM_MODEL (efetivo)",
+        value=llm_model,
+        disabled=True,
+        key="dev_diag_llm_model",
+    )
     if env_model:
         st.caption("Origem: variável de ambiente `LLM_MODEL`.")
     else:
@@ -1083,33 +1316,15 @@ root = _root_from_session()
 root_ok, root_msg = validate_projetos_root(root)
 
 st.title("Assistente Lab")
-st.caption("Agente documental local — inventário por projeto, RAG (txtai) e IA (LM Studio), conforme playbook MVP.")
+st.caption("Assistente para documentos e dados do laboratório — uso local e offline.")
 
-tabs = st.tabs(
-    [
-        "Início",
-        "Fontes e inventário",
-        "Indexação RAG",
-        "Teste RAG (dev)",
-        "Chat",
-        "OLAP",
-        "Diagnóstico",
-    ]
-)
+tabs = st.tabs(["Conversa", "Documentos", "Desenvolvimento"])
 
 scans: list[ProjectScan] | None = st.session_state.get("last_scan")
 
 with tabs[0]:
-    _tab_inicio()
-with tabs[1]:
-    _tab_fontes(root, root_ok, root_msg)
-with tabs[2]:
-    _tab_indexacao_rag(scans)
-with tabs[3]:
-    _tab_rag_dev()
-with tabs[4]:
     _tab_chat()
-with tabs[5]:
-    _tab_olap(scans)
-with tabs[6]:
-    _tab_diagnostico(root, root_ok, root_msg)
+with tabs[1]:
+    _tab_documentos(root, root_ok, root_msg)
+with tabs[2]:
+    _tab_desenvolvimento(root, root_ok, root_msg, scans)

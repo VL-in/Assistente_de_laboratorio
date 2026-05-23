@@ -69,6 +69,17 @@ PROFILE_OLAP_SQL = GenerationProfile(
     enable_thinking=False,
 )
 
+# Classificador de intenção do chat (JSON curto, sem thinking).
+PROFILE_CHAT_ROUTER = GenerationProfile(
+    name="instruct_router",
+    temperature=0.2,
+    top_p=0.9,
+    presence_penalty=0.0,
+    enable_thinking=False,
+)
+
+DEFAULT_ROUTER_MAX_TOKENS = 128
+
 
 def is_qwen35_model(model_id: str) -> bool:
     m = (model_id or "").lower()
