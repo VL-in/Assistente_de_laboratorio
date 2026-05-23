@@ -51,7 +51,7 @@ Edite o `.env` (nunca commite este arquivo):
 |----------|-------------|-----------------|
 | `PROJETOS_HOST_DIR` | Sim | Caminho **absoluto** no host da pasta que contém os projetos (ex.: `D:/Vanessa/AI_project/Projetos`) |
 | `LLM_BASE_URL` | Sim | URL do LM Studio **acessível de dentro do contêiner** (veja [LM Studio](#lm-studio-no-docker)) |
-| `LLM_MODEL` | Sim | ID **exato** do modelo na aba Server do LM Studio (ex.: `qwen3.5-4b-mtp`) |
+| `LLM_MODEL` | Sim | ID **exato** do modelo na aba Server do LM Studio (ex.: `qwen3.5-9b-mtp`) |
 | `OPENAI_API_KEY` | Recomendado | Valor dummy, ex.: `lm-studio` |
 | `STREAMLIT_PORT` | Não | Padrão `8502` |
 
@@ -108,7 +108,7 @@ O contêiner **não** roda o LM Studio; ele só se conecta ao servidor no **host
 | Cenário | Exemplo de `LLM_BASE_URL` | Observação |
 |---------|---------------------------|------------|
 | Docker Desktop (Windows/macOS), LM Studio no mesmo PC | `http://host.docker.internal:1234` | Opção mais simples no Desktop |
-| LM Studio em outro PC na rede (IP fixo) | `http://172.30.16.1:1234` | Use o IP real da máquina que hospeda o LM Studio |
+| LM Studio em outro PC na rede (IP fixo) | `http://192.168.15.7:1234` | Use o IP real da máquina que hospeda o LM Studio |
 | IP do host visto pelo Docker (WSL2 / rede virtual) | `http://172.x.x.x:1234` | Só use se `curl` **de dentro do contêiner** responder |
 
 **Como testar se a URL está correta** (substitua pela sua URL):
@@ -127,9 +127,9 @@ Se aparecer o nome do modelo, o chat na UI deve funcionar. Se der timeout ou *No
 
 No LM Studio: aba **Server** → ative o servidor local → carregue o modelo → copie o **ID** para `LLM_MODEL`.
 
-### Qwen3.5-4B-MTP (Unsloth GGUF)
+### Qwen3.5-9B-MTP (Unsloth GGUF)
 
-Modelo padrão do MVP: [`unsloth/Qwen3.5-4B-MTP-GGUF`](https://huggingface.co/unsloth/Qwen3.5-4B-MTP-GGUF). O Streamlit aplica os parâmetros recomendados no model card:
+Modelo padrão do MVP: [`unsloth/Qwen3.5-9B-MTP-GGUF`](https://huggingface.co/unsloth/Qwen3.5-9B-MTP-GGUF). O Streamlit aplica os parâmetros recomendados no model card:
 
 | Modo | Uso no app | Parâmetros (resumo) |
 |------|------------|---------------------|
@@ -208,8 +208,8 @@ python -m venv .venv
 .\.venv\Scripts\activate
 pip install -r requirements.txt
 $env:ASSISTENTE_PROJETOS_DIR="D:\caminho\Projetos"
-$env:LLM_BASE_URL="http://172.30.16.1:1234"
-$env:LLM_MODEL="qwen3.5-4b-mtp"
+$env:LLM_BASE_URL="http://192.168.15.7:1234"
+$env:LLM_MODEL="qwen3.5-9b-mtp"
 $env:OPENAI_API_KEY="lm-studio"
 streamlit run app.py --server.port 8502
 ```
