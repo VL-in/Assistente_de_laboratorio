@@ -1,0 +1,10 @@
+fix(olap): alinha LIMIT do SQL ao system prompt text-to-SQL
+
+O backend forcava LIMIT 50 em toda query sem clausula LIMIT via
+_ensure_limit(), contradizendo a regra do system prompt: so incluir
+LIMIT quando o usuario pedir quantidade especifica de linhas.
+
+- Remove _ensure_limit e injecao automatica em generate_sql/execute_sql.
+- Renomeia _MAX_RESULT_ROWS para _MAX_PROMPT_PREVIEW_ROWS: limite de 50
+  linhas apenas no texto OLAP enviado ao chat, nao no SQL executado.
+- Atualiza instrucao correspondente em _TEXT_TO_SQL_SYSTEM.
