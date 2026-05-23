@@ -35,6 +35,7 @@ from openai import OpenAI
 from llm_config import (
     DEFAULT_LLM_BASE_URL,
     DEFAULT_LLM_MODEL,
+    get_llm_api_key,
     get_llm_base_url_raw,
     get_llm_model,
     llm_runtime_config,
@@ -46,6 +47,7 @@ from qwen35_inference import (
     create_chat_completion,
     env_enable_thinking_default,
     is_qwen35_model,
+    iter_stream_answer_text,
     sanitize_history_message,
     select_chat_profile,
     strip_thinking_blocks,
@@ -55,6 +57,7 @@ from projects_loader import (
     ENV_PROJETOS_ROOT,
     ProjectScan,
     documents_by_project,
+    filter_scans_by_extensions,
     projetos_root_from_env,
     running_inside_docker,
     scan_all_projects,
@@ -211,7 +214,12 @@ def _txtai_backend_cached(mtime_key: float):
     return emb
 
 
-def rag_semantic_search(query: str, limit: int) -> list[dict]:
+def rag_semantic_search(
+    query: str,
+    limit: int,
+    *,
+    project_ids: set[str] | None = None,
+) -> list[dict]:
     """
     Executa uma busca semântica usando o backend txtai em cache.
 
@@ -225,7 +233,19 @@ def rag_semantic_search(query: str, limit: int) -> list[dict]:
     emb = _txtai_backend_cached(mt)
     if emb is None:
         return []
-    return search_with_backend(emb, query, limit)
+    return search_with_backend(emb, query, limit, project_ids=project_ids)
+
+
+@st.cache_resource
+def _openai_client_cached(base_url: str, api_key: str, timeout_s: float) -> OpenAI:
+    """Cliente OpenAI reutilizado entre mensagens (evita handshake repetido)."""
+    return OpenAI(base_url=base_url, api_key=api_key, timeout=timeout_s)
+
+
+def _openai_client() -> OpenAI:
+    base, _, api_key = llm_runtime_config()
+    timeout_s = float(os.environ.get("LLM_TIMEOUT_S", "120"))
+    return _openai_client_cached(base, api_key, timeout_s)
 
 
 def _check_openai_compatible_models(base_url: str, *, timeout_s: float = 5.0) -> tuple[bool, str]:
@@ -234,7 +254,11 @@ def _check_openai_compatible_models(base_url: str, *, timeout_s: float = 5.0) ->
     if not b:
         return False, "URL base vazia."
     url = f"{b}/models"
-    req = urllib.request.Request(url, method="GET")
+    headers: dict[str, str] = {}
+    api_key = get_llm_api_key()
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    req = urllib.request.Request(url, method="GET", headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=timeout_s) as resp:
             raw = resp.read().decode("utf-8", errors="replace")
@@ -306,11 +330,7 @@ def _run_project_scan(*, show_errors_in_sidebar: bool = False) -> None:
             extensions=exts,
             compute_hashes=compute_hashes,
         )
-        tabular_scans = scan_all_projects(
-            root,
-            extensions=TABULAR_EXTENSIONS,
-            compute_hashes=compute_hashes,
-        )
+        tabular_scans = filter_scans_by_extensions(scans, TABULAR_EXTENSIONS)
         olap_stats = sync_tabular_from_scans(tabular_scans)
     st.session_state["last_scan"] = scans
     st.session_state["last_root"] = str(root)
@@ -450,6 +470,7 @@ def _tab_documentos(root: Path, root_ok: bool, root_msg: str) -> None:
         options=options,
         default=options,
         key="docs_filter_projects",
+        help="Se restringir a um subconjunto, a aba Conversa usa só esses projetos na busca de documentos.",
     )
     active_projects = selected if selected else options
     df = df[df["projeto"].isin(active_projects)]
@@ -810,6 +831,35 @@ def _tab_rag_dev() -> None:
                             st.json(h)
 
 
+def _effective_rag_project_ids(scans: list[ProjectScan] | None) -> set[str] | None:
+    """
+    Projetos visíveis na busca RAG do chat.
+
+    - Modo dev manual: multiselect ``dev_chat_rag_projects``.
+    - Usuário final: filtro da aba Documentos quando restringe um subconjunto.
+    - Caso contrário: ``None`` (todos os projetos indexados).
+    """
+    if scans is None:
+        return None
+    all_ids = {s.project_id for s in scans}
+    if not all_ids:
+        return None
+
+    if st.session_state.get("dev_chat_override"):
+        selected = st.session_state.get("dev_chat_rag_projects")
+        if selected:
+            active = {p for p in selected if p in all_ids}
+            return active or None
+        return None
+
+    selected = st.session_state.get("docs_filter_projects")
+    if selected:
+        active = {p for p in selected if p in all_ids}
+        if active and len(active) < len(all_ids):
+            return active
+    return None
+
+
 def _chat_effective_options() -> dict:
     """
     Parâmetros efetivos do chat.
@@ -888,6 +938,17 @@ def _tab_chat_dev_controls() -> None:
     with c6:
         st.number_input("Turnos no histórico", 1, 30, 8, key="dev_chat_max_history_turns")
 
+    scans: list[ProjectScan] | None = st.session_state.get("last_scan")
+    if scans and st.session_state.get("dev_chat_override"):
+        options = sorted({s.project_id for s in scans})
+        st.multiselect(
+            "Projetos visíveis no RAG (dev)",
+            options=options,
+            default=options,
+            help="Restringe trechos recuperados aos projetos selecionados. Vazio = todos.",
+            key="dev_chat_rag_projects",
+        )
+
 
 def _tab_chat() -> None:
     """
@@ -899,7 +960,7 @@ def _tab_chat() -> None:
     st.header("Conversa")
     st.caption("Pergunte sobre experimentos, insumos e resultados documentados no laboratório.")
 
-    base, model, api_key = llm_runtime_config()
+    base, model, _ = llm_runtime_config()
     opts = _chat_effective_options()
     use_rag = opts["use_rag"]
     use_olap = opts["use_olap"]
@@ -945,7 +1006,9 @@ def _tab_chat() -> None:
         st.session_state.chat_messages.append({"role": "user", "content": prompt})
         show_dev_details = bool(st.session_state.get("dev_chat_override"))
 
-        client = OpenAI(base_url=base, api_key=api_key, timeout=120.0)
+        client = _openai_client()
+        scans: list[ProjectScan] | None = st.session_state.get("last_scan")
+        rag_project_ids = _effective_rag_project_ids(scans)
 
         history_before = st.session_state.chat_messages[:-1]
         _route_kwargs = dict(
@@ -969,11 +1032,18 @@ def _tab_chat() -> None:
             st.caption(
                 f"Roteador ({route.source}): documentos={'sim' if run_rag else 'não'} · "
                 f"planilhas={'sim' if run_olap else 'não'}"
+                + (
+                    f" · RAG projetos={', '.join(sorted(rag_project_ids))}"
+                    if rag_project_ids
+                    else ""
+                )
             )
 
         system_prompt = CHAT_SYSTEM_PROMPT
         if run_rag:
-            hits = rag_semantic_search(prompt, int(rag_top_k))
+            hits = rag_semantic_search(
+                prompt, int(rag_top_k), project_ids=rag_project_ids
+            )
             ctx = format_context_for_llm(hits)
             if ctx:
                 system_prompt += (
@@ -1054,19 +1124,10 @@ def _tab_chat() -> None:
                         )
 
                         def _token_stream():
-                            for chunk in stream:
-                                if not chunk.choices:
-                                    continue
-                                delta = chunk.choices[0].delta
-                                if delta and delta.content:
-                                    yield delta.content
+                            yield from iter_stream_answer_text(stream, model_id=model)
 
                         full_text = st.write_stream(_token_stream)
-                        answer = (
-                            strip_thinking_blocks(full_text or "")
-                            if is_qwen35_model(model)
-                            else (full_text or "")
-                        )
+                        answer = strip_thinking_blocks(full_text or "")
                         st.session_state.chat_messages.append(
                             {"role": "assistant", "content": answer}
                         )
@@ -1081,11 +1142,7 @@ def _tab_chat() -> None:
                                 stream=False,
                             )
                         raw = (completion.choices[0].message.content or "").strip()
-                        text = (
-                            strip_thinking_blocks(raw)
-                            if is_qwen35_model(model)
-                            else raw
-                        )
+                        text = strip_thinking_blocks(raw)
                         st.markdown(text)
                         st.session_state.chat_messages.append(
                             {"role": "assistant", "content": text}
@@ -1177,33 +1234,27 @@ def _tab_olap(scans: list[ProjectScan] | None) -> None:
 
     if scans is None:
         st.warning("Faça **Escanear pastas** na aba **Documentos** (ou em Desenvolvimento) para ingerir planilhas.")
-    else:
-        if st.button("Sincronizar planilhas com DuckDB agora", type="primary", key="btn_olap_sync"):
-            root = _root_from_session()
-            with st.spinner("Carregando CSV/XLSX/XLSM nos projetos…"):
-                tabular_scans = scan_all_projects(
-                    root,
-                    extensions=TABULAR_EXTENSIONS,
-                    compute_hashes=bool(st.session_state.get("compute_hashes")),
-                )
-                stats = sync_tabular_from_scans(tabular_scans)
-            st.session_state["last_olap_sync"] = stats
-            if getattr(stats, "aborted_empty_scan", False):
-                st.error(
-                    "Sincronização **abortada**: o escaneamento não encontrou "
-                    "planilhas, mas o DuckDB tem tabelas. Nenhuma tabela foi "
-                    "apagada. Confira a raiz de projetos na barra lateral."
-                )
-            else:
-                st.success(
-                    f"{stats.tables_touched} tabela(s) criada(s)/atualizada(s), "
-                    f"{stats.tables_removed} removida(s), "
-                    f"{stats.indexes_ensured} índice(s) de metadados garantidos."
-                )
-            if stats.errors:
-                with st.expander("Erros / avisos da ingestão"):
-                    st.code("\n".join(stats.errors[:30]), language="text")
-            st.rerun()
+    elif st.button("Sincronizar planilhas com DuckDB agora", type="primary", key="btn_olap_sync"):
+        with st.spinner("Carregando CSV/XLSX/XLSM nos projetos…"):
+            tabular_scans = filter_scans_by_extensions(scans, TABULAR_EXTENSIONS)
+            stats = sync_tabular_from_scans(tabular_scans)
+        st.session_state["last_olap_sync"] = stats
+        if getattr(stats, "aborted_empty_scan", False):
+            st.error(
+                "Sincronização **abortada**: o escaneamento não encontrou "
+                "planilhas, mas o DuckDB tem tabelas. Nenhuma tabela foi "
+                "apagada. Confira a raiz de projetos na barra lateral."
+            )
+        else:
+            st.success(
+                f"{stats.tables_touched} tabela(s) criada(s)/atualizada(s), "
+                f"{stats.tables_removed} removida(s), "
+                f"{stats.indexes_ensured} índice(s) de metadados garantidos."
+            )
+        if stats.errors:
+            with st.expander("Erros / avisos da ingestão"):
+                st.code("\n".join(stats.errors[:30]), language="text")
+        st.rerun()
 
     catalog = list_ingested_tables()
     st.subheader("Catálogo de tabelas (planilhas)")
@@ -1216,7 +1267,7 @@ def _tab_olap(scans: list[ProjectScan] | None) -> None:
         st.dataframe(catalog, use_container_width=True, hide_index=True)
 
     with st.expander("Catálogo de schema (enviado ao LLM)"):
-        schema_text = build_schema_catalog_text()
+        schema_text = build_schema_catalog_text(sample_rows=2)
         if schema_text.startswith("("):
             st.warning(schema_text)
         else:

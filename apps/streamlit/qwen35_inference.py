@@ -207,6 +207,38 @@ def create_chat_completion(
 
 def sanitize_history_message(role: str, content: str, *, model_id: str) -> str:
     """Histórico enviado ao modelo: assistant sem blocos de thinking."""
-    if role == "assistant" and is_qwen35_model(model_id):
+    if role == "assistant":
         return strip_thinking_blocks(content)
     return content
+
+
+def iter_stream_answer_text(stream: Any, *, model_id: str):
+    """
+    Itera tokens da resposta omitindo blocos de raciocínio durante o streaming.
+
+    Para modelos Qwen3.5, acumula o texto bruto e só emite a parte já visível
+    após ``strip_thinking_blocks``, evitando flash de ``<think>``
+    na UI antes do pós-processamento.
+    """
+    if not is_qwen35_model(model_id):
+        for chunk in stream:
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            if delta and delta.content:
+                yield delta.content
+        return
+
+    raw = ""
+    yielded_len = 0
+    for chunk in stream:
+        if not chunk.choices:
+            continue
+        delta = chunk.choices[0].delta
+        if not delta or not delta.content:
+            continue
+        raw += delta.content
+        visible = strip_thinking_blocks(raw)
+        if len(visible) > yielded_len:
+            yield visible[yielded_len:]
+            yielded_len = len(visible)

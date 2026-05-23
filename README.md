@@ -17,8 +17,11 @@ Assistente_de_lab/
 ├── docker/streamlit/Dockerfile # Imagem da app (usuário não-root, HEALTHCHECK HTTP)
 ├── .env.docker.example         # Modelo de `.env` (segredos ficam só no `.env`)
 ├── apps/streamlit/
-│   ├── app.py                  # UI: Início, Fontes, Indexação RAG, Teste RAG, Chat, OLAP, Diagnóstico
+│   ├── app.py                  # UI: Conversa, Documentos, Desenvolvimento (RAG, OLAP, diagnóstico)
+│   ├── chat_router.py          # Roteador: documentos vs planilhas por mensagem
 │   ├── projects_loader.py      # Inventário: um subdiretório de 1º nível = projeto
+│   ├── qwen35_inference.py     # Parâmetros Qwen3.5 / strip de thinking
+│   ├── olap/                   # DuckDB: ingestão, NL→SQL, catálogo
 │   ├── rag/                    # Extração, chunking, índice txtai (upsert em lotes)
 │   └── requirements.txt
 ```
@@ -77,11 +80,11 @@ docker compose up -d --build
 
 ### 4. Validar na interface
 
-1. **Diagnóstico** — confirme pasta de projetos e clique em **Testar GET /v1/models** (LM Studio deve responder).
-2. **Fontes e inventário** (barra lateral) — informe a raiz (ou use a do `.env`) e **Escanear**.
-3. **Indexação RAG** — **Construir índice agora** com **Substituir índice existente** marcado (primeira vez ou após atualizar o app).
-4. **Teste RAG (dev)** — faça uma busca semântica para validar recuperação de trechos.
-5. **Chat** — envie uma mensagem; opcionalmente ligue **Usar RAG (txtai)** se o índice estiver pronto.
+1. **Desenvolvimento → Diagnóstico** — confirme pasta de projetos e clique em **Testar GET /v1/models** (LM Studio deve responder).
+2. **Documentos** — informe a raiz (ou use a do `.env`) e **Escanear pastas**.
+3. **Documentos** — **Atualizar base agora** (primeira vez ou após mudanças nos arquivos).
+4. **Desenvolvimento → Busca semântica** — valide recuperação de trechos.
+5. **Conversa** — envie uma mensagem; documentos e planilhas entram automaticamente quando disponíveis.
 
 ---
 

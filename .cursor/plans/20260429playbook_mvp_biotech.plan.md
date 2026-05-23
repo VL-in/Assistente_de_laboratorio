@@ -26,22 +26,24 @@ isProject: false
 
 Registro factual do que já existe no repositório **sem alterar** a arquitetura-alvo (Docker + Streamlit + txtai + DuckDB + LM Studio no host). Atualizar este bloco a cada marco entregue.
 
-**Última sincronização:** 2026-05-18 (reindexação incremental por hash + revisão RAG).
+**Última sincronização:** 2026-05-23 (revisão de progresso + corner cases OLAP/RAG/chat).
 
 | Marco | Estado | Evidência no código / artefatos |
 |--------|--------|----------------------------------|
 | Runtime Docker + Compose | Entregue | `docker-compose.yml`, `docker/streamlit/Dockerfile`, volumes `/data/projetos` (bind RO), `/data/txtai`, `/data/duckdb`, `/data/sqlite`, `extra_hosts` para `host.docker.internal`, `restart: unless-stopped`, `PYTHONUNBUFFERED` |
 | HEALTHCHECK da imagem | Entregue | `Dockerfile`: GET HTTP `/_stcore/health` na porta do Streamlit (8502) |
-| UI Streamlit (layout + abas) | Entregue | `apps/streamlit/app.py`: Início, Fontes e inventário, Indexação RAG, Teste RAG (dev), Chat, OLAP, Diagnóstico |
-| Inventário segmentado por projeto | Entregue | `apps/streamlit/projects_loader.py`: um subdiretório de primeiro nível = um `project_id`; varredura recursiva; hash SHA-256 opcional no scan; tolerância a `OSError` em stat/hash/walk |
+| UI Streamlit (layout + abas) | Entregue | `apps/streamlit/app.py`: **Conversa**, **Documentos**, **Desenvolvimento** (sub-abas: visão, chat dev, RAG, índice, OLAP, diagnóstico) |
+| Inventário segmentado por projeto | Entregue | `apps/streamlit/projects_loader.py`: um subdiretório de primeiro nível = um `project_id`; varredura recursiva; hash SHA-256 opcional no scan; tolerância a `OSError` em stat/hash/walk; `filter_scans_by_extensions` evita re-scan para OLAP |
 | Parsing documental (docx, planilhas, etc.) | Entregue | `apps/streamlit/rag/extract.py`: `.docx`, `.xlsx`, `.xlsm`, `.pdf`, `.txt`, `.md`, `.csv` |
-| Pipeline txtai (chunking + índice + busca) | Entregue | `apps/streamlit/rag/chunking.py`, `rag/index_txtai.py`, `rag/paths.py`; modelo `sentence-transformers/paraphrase-multilingual-mpnet-base-v2`; persistência em `/data/txtai` |
-| Chat + RAG + LM Studio | Em validação | `app.py`: cliente OpenAI → LM Studio; toggle **Usar RAG (txtai)**; `format_context_for_llm`; streaming; aba **Teste RAG (dev)** para inspecionar retrieval sem LLM |
-| Reindexação incremental por hash de arquivo | Entregue | `rag/manifest.json` + `build_index` incremental: compara SHA-256, `delete` de chunks obsoletos, `upsert` só em arquivos novos/alterados/removidos; UI com “Substituir índice” desmarcado |
-| DuckDB na UI | Pendente | Volume `/data/duckdb` no Compose; aba OLAP ainda placeholder (`st.info` na Fase 1/2) |
+| Pipeline txtai (chunking + índice + busca) | Entregue | `apps/streamlit/rag/chunking.py`, `rag/index_txtai.py`, `rag/paths.py`; modelo `sentence-transformers/paraphrase-multilingual-mpnet-base-v2`; persistência em `/data/txtai`; filtro opcional por `project_id` na busca |
+| Chat + RAG + LM Studio | Entregue | `app.py`: cliente OpenAI cacheado; roteador de intenção (`chat_router.py`); Qwen3.5 (`qwen35_inference.py`); streaming sem flash de `<think>`; filtro RAG por projeto (Documentos / dev) |
+| Reindexação incremental por hash de arquivo | Entregue | `rag/manifest.json` + `build_index` incremental: compara SHA-256, `delete` de chunks obsoletos, `upsert` só em arquivos novos/alterados/removidos |
+| DuckDB / OLAP na UI | Entregue | `apps/streamlit/olap/`: ingestão CSV/XLSX/XLSM → DuckDB; catálogo; NL→SQL read-only (`nl_query.py`); demo opcional; sync automático no escaneamento; salvaguarda contra drop em scan vazio |
+| Roteador chat (docs vs planilhas) | Entregue | `chat_router.py`: regras + classificador LLM leve; integrado na aba Conversa |
 | Metadados / auditoria (SQLite ou Postgres) | Pendente | Volume `/data/sqlite` no Compose; sem schema, migrações ou trilha no código |
 | Autenticação web | Pendente | Conforme Fase 1 |
 | RBAC, guardrails, testes integrados E2E | Pendente | Conforme Fase 4 |
+| Suíte de testes unitários | Parcial | `apps/streamlit/tests/` — 96+ testes (RAG, OLAP, chat router, Qwen3.5, ingest); sem E2E Compose |
 
 **Porta do Streamlit (MVP atual):** `8502` (host e contêiner), configurável por `STREAMLIT_PORT` no `.env` do Compose.
 
@@ -50,12 +52,12 @@ Registro factual do que já existe no repositório **sem alterar** a arquitetura
 | Fase | Progresso | Observação |
 |------|-----------|------------|
 | 0 — Preparação | ~100% | Stack e paths de volume definidos; `README.md` documenta LM Studio no Docker |
-| 1 — Fundação | ~65–70% | Docker, UI, diagnóstico, chat LM Studio ok; faltam DuckDB “olá mundo”, SQLite/auditoria, auth |
-| 2 — Ingestão e parsing | ~70% | Scan + parsers + stats na indexação; falta status de ingestão dedicado e incremental por hash |
-| 3 — RAG local | ~75–80% | Fluxo escanear → indexar → buscar → chat com RAG implementado; critério >90% casos curados e guardrails em código em aberto |
+| 1 — Fundação | ~80% | Docker, UI, diagnóstico, chat LM Studio, DuckDB + ingestão OLAP ok; faltam SQLite/auditoria, auth |
+| 2 — Ingestão e parsing | ~85% | Scan + parsers + stats na indexação + sync DuckDB; falta página dedicada de status por arquivo |
+| 3 — RAG local | ~85% | Fluxo escanear → indexar → buscar → chat com RAG + OLAP automático; filtro por projeto; critério >90% casos curados e guardrails em código em aberto |
 | 4 — Segurança | 0% | Não iniciada |
 
-**Demo atual possível:** escanear projetos → construir índice → **Teste RAG** → **Chat** com RAG (LM Studio no host). **Uso interno “seguro” do playbook** ainda exige Fase 1 (login, auditoria) e Fase 4.
+**Demo atual possível:** escanear projetos → atualizar base (RAG) → **Conversa** com documentos e planilhas (roteador automático) → **Desenvolvimento** para tuning/diagnóstico. **Uso interno “seguro” do playbook** ainda exige Fase 1 (login, auditoria) e Fase 4.
 
 **`apps/api` (FastAPI):** opcional, fora do caminho crítico do MVP (alinhado à nota de arquitetura abaixo).
 
@@ -121,7 +123,7 @@ flowchart LR
   - **`docker-compose.yml`** + **`Dockerfile`** (imagem enxuta quando possível; usuário não-root; porta Streamlit exposta — no repositório atual: **8502**, via `STREAMLIT_PORT`) — **feito**
   - app **Streamlit** inicial: layout base, página de **diagnóstico** (versão, paths de volume, teste de conectividade ao LM Studio com timeouts e mensagem clara se indisponível) — **feito** (inclui status do índice txtai)
   - fluxo mínimo **Streamlit → cliente OpenAI** → LM Studio (`LLM_BASE_URL`, streaming se suportado) — **feito** (aba Chat)
-  - **DuckDB** “olá mundo”: conexão a arquivo em volume + uma consulta/agregação de exemplo na UI — **pendente**
+  - **DuckDB** “olá mundo”: conexão a arquivo em volume + uma consulta/agregação de exemplo na UI — **feito** (`olap/connection.py`, demo + ingestão real de planilhas)
   - banco de **metadados/auditoria** inicial + migrações (Postgres ou SQLite em volume) — **pendente**
   - log estruturado e trilha de auditoria base — **pendente**
   - **autenticação web** inicial (equivalente ao login do blueprint: ex. `streamlit-authenticator` ou camada atrás de reverse proxy — escolher e documentar na Fase 0) — **pendente**
@@ -135,7 +137,7 @@ flowchart LR
   - parser de `docx`, `xlsx`, `xlsm` — **feito** (`rag/extract.py`; também pdf, txt, md, csv)
   - hash/versionamento para detectar alterações — **feito** (SHA-256 no scan ou na indexação; manifesto `index_manifest.json`)
   - **página Streamlit** de status da ingestão (progresso, erros, último hash) — **parcial** (stats incremental na Indexação RAG; sem página dedicada por arquivo)
-  - (opcional nesta fase) materialização de tabelas/resumos para **DuckDB** a partir da extração (prepara OLAP na Fase 3/4) — **pendente**
+  - (opcional nesta fase) materialização de tabelas/resumos para **DuckDB** a partir da extração (prepara OLAP na Fase 3/4) — **feito** (`olap/ingest.py`, sync no escaneamento)
 - Critério de pronto:
   - novos arquivos entram no pipeline sem duplicação — **feito** (modo incremental por hash + manifesto; rebuild completo com “Substituir índice”)
 
@@ -145,7 +147,7 @@ flowchart LR
   - chunking com metadados de origem (arquivo, aba, seção) compatíveis com o índice txtai — **feito**
   - **txtai**: embeddings, persistência do índice em volume, pipeline de retrieval + prompt com **citações** — **feito**
   - **página de chat** no Streamlit consumindo o pipeline (sem necessidade de endpoint REST próprio) — **feito**
-  - temperatura / `max_tokens` / truncagem de contexto alinhados ao modelo no LM Studio e à janela de contexto — **parcial** (truncagem de contexto RAG ~12k caracteres em `format_context_for_llm`; `max_tokens`/temperatura não expostos na UI)
+  - temperatura / `max_tokens` / truncagem de contexto alinhados ao modelo no LM Studio e à janela de contexto — **parcial** (truncagem RAG ~12k chars; `max_tokens`/thinking expostos na aba Desenvolvimento; perfis Qwen3.5 centralizados)
 - Critério de pronto:
   - respostas com evidência e fonte em >90% dos casos de teste curados — **pendente** (sem suíte curada nem testes automatizados; instruções no system prompt, sem guardrail em código para “sem fonte”)
 
@@ -160,8 +162,8 @@ flowchart LR
   - uso interno validado (dados locais em volume, LM Studio no host) + checklist de segurança atendido — **pendente**
 
 ## Próximos passos sugeridos (ordem, sem mudar escopo)
-1. Fechar **Fase 1**: DuckDB “olá mundo” na aba OLAP; escolher SQLite; autenticação web; critério de pronto da fase.
-2. Fechar **Fase 2**: ligar `content_hash_sha256` ao `build_index` (reprocessar só arquivos alterados); página de status de ingestão.
+1. Fechar **Fase 1**: escolher SQLite; autenticação web; critério de pronto da fase.
+2. Fechar **Fase 2**: página de status de ingestão por arquivo (RAG + OLAP).
 3. Fechar **Fase 3**: suíte de casos curados + métrica de citação válida; guardrail quando RAG vazio.
 4. Executar **Fase 4** conforme entregáveis acima.
 

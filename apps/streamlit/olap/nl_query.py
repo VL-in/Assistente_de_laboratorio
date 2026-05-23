@@ -255,7 +255,7 @@ def generate_sql(
     diagnóstico mostrar exatamente o que o LLM devolveu quando o SQL não pôde
     ser extraído.
     """
-    catalog = build_schema_catalog_text()
+    catalog = build_schema_catalog_text(sample_rows=0)
 
     if catalog.startswith("("):
         return None, f"Catálogo vazio: {catalog}", ""
