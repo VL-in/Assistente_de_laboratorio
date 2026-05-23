@@ -23,7 +23,10 @@ from .connection import open_duckdb
 from .ingest import has_ingested_tables
 from .schema_catalog import build_schema_catalog_text
 
-_MAX_RESULT_ROWS = 50
+# Máximo de linhas exibidas no texto OLAP injetado no chat (preview).
+# Não altera o SQL executado — alinhado ao system prompt: LIMIT só quando
+# o usuário pede quantidade específica (o LLM inclui LIMIT na query).
+_MAX_PROMPT_PREVIEW_ROWS = 50
 _SQL_MAX_TOKENS = DEFAULT_SQL_MAX_TOKENS
 
 # Palavras proibidas em SELECTs de leitura. Inclui DDL/DML e administracao
@@ -67,7 +70,7 @@ Regras obrigatórias:
 - Use somente SELECT ou WITH ... SELECT (leitura).
 - Identifique tabelas e colunas EXCLUSIVAMENTE pelo catálogo fornecido.
 - Use aspas duplas nos nomes de tabelas quando contiverem caracteres especiais: "nome_tabela".
-- Inclua LIMIT 50 no final se a consulta puder retornar muitas linhas, exceto quando o usuário pedir mais linhas.
+- Não inclua LIMIT no final da consulta a menos que o usuário peça por quantidade específica de linhas.
 - Não invente tabelas nem colunas que não estejam no catálogo.
 - Para filtrar por projeto, use a coluna _project_id.
 - Para filtrar por arquivo, use _source_file ou _sheet_name.
@@ -237,12 +240,6 @@ def validate_readonly_sql(sql: str) -> tuple[bool, str]:
     return True, ""
 
 
-def _ensure_limit(sql: str, limit: int = _MAX_RESULT_ROWS) -> str:
-    if re.search(r"\bLIMIT\b", sql, re.IGNORECASE):
-        return sql
-    return f"{sql.rstrip()}\nLIMIT {limit}"
-
-
 def generate_sql(
     question: str,
     *,
@@ -297,14 +294,13 @@ def generate_sql(
     ok, err = validate_readonly_sql(sql)
     if not ok:
         return None, err, raw
-    return _ensure_limit(sql), None, raw
+    return sql, None, raw
 
 
 def execute_sql(sql: str) -> tuple[pd.DataFrame | None, str | None]:
     ok, err = validate_readonly_sql(sql)
     if not ok:
         return None, err
-    sql = _ensure_limit(sql)
     from .ingest import database_exists_quick
 
     if not database_exists_quick():
@@ -322,8 +318,14 @@ def execute_sql(sql: str) -> tuple[pd.DataFrame | None, str | None]:
 def _format_dataframe_for_prompt(df: pd.DataFrame) -> str:
     if df.empty:
         return "(consulta executada; zero linhas)"
-    preview = df.head(_MAX_RESULT_ROWS)
-    return preview.to_string(index=False)
+    preview = df.head(_MAX_PROMPT_PREVIEW_ROWS)
+    text = preview.to_string(index=False)
+    if len(df) > _MAX_PROMPT_PREVIEW_ROWS:
+        text += (
+            f"\n(… exibindo {_MAX_PROMPT_PREVIEW_ROWS} de {len(df)} linha(s) "
+            "no contexto do chat; consulta completa na UI OLAP …)"
+        )
+    return text
 
 
 def run_nl_olap_query(
