@@ -21,7 +21,7 @@ services:
     volumes:
       # Pasta do host com um subdiretório por projeto de P&D (somente leitura)
       - type: bind
-        source: ${PROJETOS_HOST_DIR:-D:/Vanessa/AI_project/Projetos}
+        source: ${PROJETOS_HOST_DIR:-./projetos}
         target: /data/projetos
         read_only: true
       - assistente_txtai:/data/txtai

@@ -50,17 +50,24 @@ def check_duckdb() -> tuple[bool, str]:
     """
     Smoke test: conecta e executa ``SELECT 1``.
 
-    Retorna ``(ok, detalhe)`` para a aba Diagnóstico.
+    Retorna ``(ok, detalhe)`` para a aba Diagnóstico. Se o arquivo do banco
+    ainda não existir, usa conexão ``:memory:`` para não criar side effect
+    no volume antes da primeira ingestão real.
     """
     try:
         if database_exists():
             conn = open_duckdb(read_only=True)
+            detail = f"DuckDB {duckdb_library_version()} — SELECT 1 ok"
         else:
-            conn = open_duckdb(read_only=False)
+            conn = duckdb.connect(":memory:")
+            detail = (
+                f"DuckDB {duckdb_library_version()} — SELECT 1 ok "
+                "(biblioteca ok; arquivo em disco ainda não criado)"
+            )
         try:
             row = conn.execute("SELECT 1 AS ok").fetchone()
             if row and row[0] == 1:
-                return True, f"DuckDB {duckdb_library_version()} — SELECT 1 ok"
+                return True, detail
             return False, "Consulta de teste retornou resultado inesperado."
         finally:
             conn.close()

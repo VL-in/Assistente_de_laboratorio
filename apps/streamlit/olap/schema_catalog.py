@@ -29,9 +29,12 @@ def _user_tables(conn) -> list[str]:
     ]
 
 
-def build_schema_catalog_text(*, sample_rows: int = 2) -> str:
+def build_schema_catalog_text(*, sample_rows: int = 0) -> str:
     """
-    Texto legível com tabelas, colunas e amostra para o LLM gerar SQL.
+    Texto legível com tabelas, colunas e amostra opcional para o LLM gerar SQL.
+
+    Por padrão ``sample_rows=0`` — só nomes de colunas, sem linhas reais no
+    prompt (evita vazamento de dados sensíveis para o servidor LLM).
     """
     if not database_exists_quick():
         return "(Nenhum banco DuckDB materializado ainda.)"
