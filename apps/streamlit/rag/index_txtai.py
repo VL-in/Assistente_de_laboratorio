@@ -27,6 +27,7 @@ Formatação de contexto (``format_context_for_llm``)
 from __future__ import annotations
 
 import hashlib
+import re
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -747,18 +748,50 @@ def search_chunks(query: str, limit: int) -> list[dict]:
         emb.close()
 
 
-def search_with_backend(backend: object, query: str, limit: int) -> list[dict]:
+def filter_hits_by_project(
+    hits: list[dict],
+    project_ids: set[str] | None,
+) -> list[dict]:
+    """Restringe resultados RAG a um subconjunto de projetos (evita vazamento entre projetos)."""
+    if not project_ids:
+        return hits
+    filtered: list[dict] = []
+    for hit in hits:
+        pid = hit.get("project_id")
+        if pid is None and isinstance(hit.get("text"), str):
+            # Compatibilidade com índices antigos: prefixo "[Projeto: X]" no texto.
+            m = re.search(r"\[Projeto:\s*([^\]]+)\]", hit["text"])
+            if m:
+                pid = m.group(1).strip()
+        if pid in project_ids:
+            filtered.append(hit)
+    return filtered
+
+
+def search_with_backend(
+    backend: object,
+    query: str,
+    limit: int,
+    *,
+    project_ids: set[str] | None = None,
+) -> list[dict]:
     """
     Executa uma busca semântica usando uma instância de ``Embeddings`` já carregada.
 
     Receber o backend como parâmetro (em vez de criá-lo internamente) evita
     recarregar o modelo de ~500 MB a cada pergunta do usuário. A instância deve
     ser gerenciada pelo chamador (ex.: ``st.cache_resource`` no Streamlit).
+
+    Quando ``project_ids`` é informado, busca ``limit * 3`` candidatos e filtra
+    por projeto antes de truncar — compensa hits de outros projetos no top-K bruto.
     """
     q = (query or "").strip()
     if not q:
         return []
-    return format_search_results(backend.search(q, limit))  # type: ignore[attr-defined]
+    fetch_limit = limit * 3 if project_ids else limit
+    hits = format_search_results(backend.search(q, fetch_limit))  # type: ignore[attr-defined]
+    hits = filter_hits_by_project(hits, project_ids)
+    return hits[:limit]
 
 
 # ── Formatação de contexto para o LLM ───────────────────────────────────────

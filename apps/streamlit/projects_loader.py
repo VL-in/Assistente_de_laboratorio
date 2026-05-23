@@ -131,6 +131,32 @@ class ProjectScan:
         return len(self.files)
 
 
+def filter_scans_by_extensions(
+    scans: list[ProjectScan],
+    extensions: frozenset[str],
+) -> list[ProjectScan]:
+    """
+    Deriva um sub-inventário filtrado por extensão a partir de um scan completo.
+
+    Evita re-varrer o disco quando o caller já possui ``scans`` com hashes
+    calculados — útil para sincronizar planilhas (OLAP) após escaneamento RAG.
+    """
+    normalized = frozenset(
+        e.lower() if e.startswith(".") else f".{e.lower()}" for e in extensions
+    )
+    out: list[ProjectScan] = []
+    for scan in scans:
+        files = [
+            f for f in scan.files if f.absolute_path.suffix.lower() in normalized
+        ]
+        if not files:
+            continue
+        out.append(
+            ProjectScan(project_id=scan.project_id, root=scan.root, files=files)
+        )
+    return out
+
+
 # ── Varredura de arquivos ────────────────────────────────────────────────────
 
 def discover_project_directories(projetos_root: Path) -> list[Path]:

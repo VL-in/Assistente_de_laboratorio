@@ -44,20 +44,27 @@ class ManifestTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             import os
 
+            prev = os.environ.get("ASSISTENTE_TXTAI_DIR")
             os.environ["ASSISTENTE_TXTAI_DIR"] = tmp
-            m = IndexManifest(embedding_model="test-model")
-            m.set_file("ELISA/a.docx", content_hash="hash1", chunk_ids=["id0", "id1"])
-            save_manifest(m)
-            loaded = load_manifest()
-            self.assertEqual(loaded.embedding_model, "test-model")
-            entry = loaded.get("ELISA/a.docx")
-            self.assertIsNotNone(entry)
-            assert entry is not None
-            self.assertEqual(entry.content_hash_sha256, "hash1")
-            self.assertEqual(entry.chunk_ids, ["id0", "id1"])
-            self.assertTrue(manifest_path().is_file())
-            raw = json.loads(manifest_path().read_text(encoding="utf-8"))
-            self.assertEqual(raw["version"], 1)
+            try:
+                m = IndexManifest(embedding_model="test-model")
+                m.set_file("ELISA/a.docx", content_hash="hash1", chunk_ids=["id0", "id1"])
+                save_manifest(m)
+                loaded = load_manifest()
+                self.assertEqual(loaded.embedding_model, "test-model")
+                entry = loaded.get("ELISA/a.docx")
+                self.assertIsNotNone(entry)
+                assert entry is not None
+                self.assertEqual(entry.content_hash_sha256, "hash1")
+                self.assertEqual(entry.chunk_ids, ["id0", "id1"])
+                self.assertTrue(manifest_path().is_file())
+                raw = json.loads(manifest_path().read_text(encoding="utf-8"))
+                self.assertEqual(raw["version"], 1)
+            finally:
+                if prev is None:
+                    os.environ.pop("ASSISTENTE_TXTAI_DIR", None)
+                else:
+                    os.environ["ASSISTENTE_TXTAI_DIR"] = prev
 
     def test_remove_file_returns_chunk_ids(self) -> None:
         m = IndexManifest()
