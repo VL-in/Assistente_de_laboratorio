@@ -23,7 +23,7 @@ from qwen35_inference import (  # noqa: E402
 
 class Qwen35ModelDetectionTests(unittest.TestCase):
     def test_detects_mtp_id(self) -> None:
-        self.assertTrue(is_qwen35_model("qwen3.5-9b-mtp"))
+        self.assertTrue(is_qwen35_model("qwen3.5-4b-mtp"))
 
     def test_ignores_other_models(self) -> None:
         self.assertFalse(is_qwen35_model("llama-3-8b"))
@@ -44,7 +44,7 @@ class StripThinkingTests(unittest.TestCase):
 class CompletionKwargsTests(unittest.TestCase):
     def test_instruct_extra_body(self) -> None:
         kw = build_completion_kwargs(
-            model="qwen3.5-9b-mtp",
+            model="qwen3.5-4b-mtp",
             profile=PROFILE_CHAT_INSTRUCT,
             max_tokens=1024,
         )
@@ -53,7 +53,7 @@ class CompletionKwargsTests(unittest.TestCase):
 
     def test_olap_sql_profile(self) -> None:
         kw = build_completion_kwargs(
-            model="qwen3.5-9b-mtp",
+            model="qwen3.5-4b-mtp",
             profile=PROFILE_OLAP_SQL,
             max_tokens=2048,
         )

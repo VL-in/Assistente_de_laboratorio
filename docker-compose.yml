@@ -15,8 +15,8 @@ services:
       ASSISTENTE_PROJETOS_DIR: /data/projetos
       ASSISTENTE_TXTAI_DIR: /data/txtai
       ASSISTENTE_DUCKDB_DIR: /data/duckdb
-      LLM_BASE_URL: ${LLM_BASE_URL:-http://192.168.15.7:1234}
-      LLM_MODEL: ${LLM_MODEL:-qwen3.5-9b-mtp}
+      LLM_BASE_URL: ${LLM_BASE_URL:-http://172.30.16.1:1234}
+      LLM_MODEL: ${LLM_MODEL:-qwen3.5-4b-mtp}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-lm-studio}
     volumes:
       # Pasta do host com um subdiretório por projeto de P&D (somente leitura)

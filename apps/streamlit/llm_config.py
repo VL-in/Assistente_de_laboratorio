@@ -13,10 +13,10 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-# Padrões do MVP — unsloth/Qwen3.5-9B-MTP-GGUF via LM Studio (API OpenAI-compatível).
+# Padrões do MVP — unsloth/Qwen3.5-4B-MTP-GGUF via LM Studio (API OpenAI-compatível).
 # Parâmetros de sampling/thinking: ``qwen35_inference.py`` (model card Hugging Face).
-DEFAULT_LLM_BASE_URL = "http://192.168.15.7:1234"
-DEFAULT_LLM_MODEL = "qwen3.5-9b-mtp"
+DEFAULT_LLM_BASE_URL = "http://172.30.16.1:1234"
+DEFAULT_LLM_MODEL = "qwen3.5-4b-mtp"
 DEFAULT_LLM_API_KEY = "lm-studio"
 
 
