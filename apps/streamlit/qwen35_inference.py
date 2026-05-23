@@ -1,7 +1,7 @@
 """
 Parâmetros de inferência alinhados ao Qwen3.5 / Qwen3.5-MTP (Unsloth GGUF).
 
-Referência: https://huggingface.co/unsloth/Qwen3.5-9B-MTP-GGUF
+Referência: https://huggingface.co/unsloth/Qwen3.5-4B-MTP-GGUF
 - Modo thinking (padrão do modelo): blocos ``<think>`` antes da resposta.
 - Modo instruct: ``enable_thinking=False`` via ``chat_template_kwargs`` (recomendado para
   assistente documental e geração de SQL).

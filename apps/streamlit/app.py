@@ -709,7 +709,7 @@ def _tab_chat() -> None:
     if is_qwen35_model(model):
         st.caption(
             "Qwen3.5-MTP: modo **instruct** (sem thinking) por padrão — parâmetros do "
-            "[model card Unsloth](https://huggingface.co/unsloth/Qwen3.5-9B-MTP-GGUF). "
+            "[model card Unsloth](https://huggingface.co/unsloth/Qwen3.5-4B-MTP-GGUF). "
             "No LM Studio, use servidor recente com MTP/speculative decoding para ~1,5–2× mais velocidade."
         )
 
