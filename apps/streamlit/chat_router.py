@@ -17,7 +17,10 @@ from openai import OpenAI
 from qwen35_inference import (
     DEFAULT_ROUTER_MAX_TOKENS,
     PROFILE_CHAT_ROUTER,
+    chat_history_chars_per_message,
+    chat_max_history_turns,
     create_chat_completion,
+    format_history_snippet,
     strip_thinking_blocks,
 )
 
@@ -117,22 +120,6 @@ def _is_social_only(message: str) -> bool:
     return _SOCIAL_ONLY.match(msg) is not None
 
 
-def _format_history_snippet(history: list[dict], *, max_turns: int = 3) -> str:
-    """Últimas mensagens user/assistant para desambiguar follow-ups."""
-    if not history:
-        return "(sem histórico anterior)"
-    tail = history[-(max_turns * 2) :]
-    lines: list[str] = []
-    for m in tail:
-        role = m.get("role", "?")
-        content = _normalize_message(str(m.get("content") or ""))
-        if not content:
-            continue
-        label = "Usuário" if role == "user" else "Assistente"
-        lines.append(f"{label}: {content[:400]}")
-    return "\n".join(lines) if lines else "(sem histórico anterior)"
-
-
 def _parse_router_json(raw: str) -> tuple[bool, bool, bool] | None:
     text = strip_thinking_blocks((raw or "").strip())
     if not text:
@@ -186,6 +173,23 @@ def _apply_availability(
     )
 
 
+def _prioritize_ml_when_requested(
+    decision: ChatRouteDecision,
+    message: str,
+    *,
+    ml_available: bool,
+) -> ChatRouteDecision:
+    """
+    Se a mensagem pede predição ML e o .pkl existe, força só a rota ML.
+
+    Evita que o classificador marque ``documents=true`` e o chat ignore o modelo.
+    """
+    if not ml_available or not _ML_HINT.search(message):
+        return decision
+    source = decision.source if decision.use_ml else f"{decision.source}+ml_hint"
+    return ChatRouteDecision(False, False, True, source)
+
+
 def classify_with_llm(
     message: str,
     *,
@@ -194,8 +198,12 @@ def classify_with_llm(
     model: str,
 ) -> ChatRouteDecision | None:
     """Chama o LM Studio para classificar; retorna ``None`` se a resposta for inválida."""
+    ml_hint = bool(_ML_HINT.search(message))
+    hist_turns = chat_max_history_turns(ml_route=ml_hint)
+    hist_chars = chat_history_chars_per_message(ml_route=ml_hint)
     user_block = (
-        f"Histórico recente:\n{_format_history_snippet(history)}\n\n"
+        f"Histórico recente:\n"
+        f"{format_history_snippet(history, max_turns=hist_turns, max_chars_per_message=hist_chars)}\n\n"
         f"Última mensagem do usuário:\n{message.strip()}"
     )
     try:
@@ -248,13 +256,17 @@ def classify_chat_routes(
     msg = _normalize_message(message)
     hist = history or []
 
-    if not router_enabled():
-        return _apply_availability(
-            ChatRouteDecision(True, True, False, "disabled"),
+    def _finalize(decision: ChatRouteDecision) -> ChatRouteDecision:
+        applied = _apply_availability(
+            decision,
             documents_available=documents_available,
             spreadsheets_available=spreadsheets_available,
             ml_available=ml_available,
         )
+        return _prioritize_ml_when_requested(applied, msg, ml_available=ml_available)
+
+    if not router_enabled():
+        return _finalize(ChatRouteDecision(True, True, False, "disabled"))
 
     if _is_social_only(msg):
         return ChatRouteDecision(False, False, False, "rules")
@@ -262,20 +274,9 @@ def classify_chat_routes(
     if client is not None and model:
         llm_decision = classify_with_llm(msg, history=hist, client=client, model=model)
         if llm_decision is not None:
-            return _apply_availability(
-                llm_decision,
-                documents_available=documents_available,
-                spreadsheets_available=spreadsheets_available,
-                ml_available=ml_available,
-            )
+            return _finalize(llm_decision)
 
-    fallback = _rule_fallback_route(msg)
-    return _apply_availability(
-        fallback,
-        documents_available=documents_available,
-        spreadsheets_available=spreadsheets_available,
-        ml_available=ml_available,
-    )
+    return _finalize(_rule_fallback_route(msg))
 
 
 def resolve_chat_routes(

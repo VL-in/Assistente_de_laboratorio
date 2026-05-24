@@ -68,14 +68,32 @@ class DatasetCatalog:
         return ""
 
     def columns_excluded_from_features(self) -> set[str]:
-        """Colunas que não devem entrar na sugestão automática de features."""
+        """Colunas que nunca entram como feature (IDs, alvo, sequências longas, etc.)."""
         excluded = set(self.suggested_drop)
         if self.default_target:
             excluded.add(self.default_target)
         for col in self.columns:
-            if col.ml_use in {"exclude", "identifier", "metadata", "optional_feature"}:
+            if col.ml_use in {
+                "exclude",
+                "identifier",
+                "metadata",
+                "target",
+                "sequence",
+                "auxiliary",
+            }:
                 excluded.add(col.name)
         return excluded
+
+    def input_feature_column_names(self) -> list[str]:
+        """Colunas do catálogo elegíveis como entrada do modelo (feature + optional_feature)."""
+        excluded = self.columns_excluded_from_features()
+        names: list[str] = []
+        for col in self.columns:
+            if col.name in excluded:
+                continue
+            if col.ml_use in {"feature", "optional_feature"}:
+                names.append(col.name)
+        return names
 
 
 def _catalog_path(catalog_id: str) -> Path:

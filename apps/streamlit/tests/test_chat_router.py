@@ -108,6 +108,19 @@ class ClassifyChatRoutesTests(unittest.TestCase):
         )
         self.assertFalse(d.use_ml)
 
+    @patch("chat_router.router_enabled", return_value=True)
+    @patch("chat_router.classify_with_llm")
+    def test_ml_hint_overrides_documents(self, mock_llm: MagicMock, _enabled: MagicMock) -> None:
+        mock_llm.return_value = ChatRouteDecision(True, False, False, "llm")
+        d = classify_chat_routes(
+            "Faça a predição de log_Aff com Agtype SARS-CoV-2",
+            client=MagicMock(),
+            model="m",
+            ml_available=True,
+        )
+        self.assertTrue(d.use_ml)
+        self.assertFalse(d.use_documents)
+
     @patch("chat_router.router_enabled", return_value=False)
     def test_disabled_router(self, _enabled: MagicMock) -> None:
         d = classify_chat_routes(

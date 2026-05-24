@@ -14,18 +14,23 @@ from pathlib import Path
 import pandas as pd
 from openai import OpenAI
 
+from ml.datasets import normalize_column_name
 from ml.dictionary import load_dataset_catalog
 from ml.paths import chat_ml_model_available, chat_ml_model_path
 from ml.predict import predict_from_bundle
 from ml.training import ModelBundle, load_model_bundle
 from qwen35_inference import (
     PROFILE_CHAT_ROUTER,
+    chat_history_chars_per_message,
+    chat_max_history_turns,
+    chat_max_tokens,
     create_chat_completion,
+    format_history_snippet,
     strip_thinking_blocks,
 )
 
 _JSON_OBJECT = re.compile(r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}", re.DOTALL)
-_EXTRACT_MAX_TOKENS = 768
+_EXTRACT_MAX_TOKENS = min(512, chat_max_tokens(ml_route=True))
 
 _EXTRACT_SYSTEM = """Você extrai valores de features para predição com um modelo ML de laboratório.
 
@@ -51,6 +56,16 @@ Mensagem atual do usuário:
 
 Extraia as linhas para predição."""
 
+_ASSIGNMENT_RE = re.compile(
+    r"(?P<key>[A-Za-z][A-Za-z0-9_\[\] /µ\-\.]*?)\s*=\s*(?P<val>[^,;\n]+?)"
+    r"(?=\s*(?:,|\.|$|\n|\s+e\s+))",
+    re.IGNORECASE,
+)
+_AGTYPE_INLINE_RE = re.compile(
+    r"\bAgtype\s*(?:[:=]\s*|\s+)(?P<val>[A-Za-z0-9][A-Za-z0-9_\-\.]*)",
+    re.IGNORECASE,
+)
+
 
 @dataclass
 class MlInferResult:
@@ -73,35 +88,42 @@ def load_chat_model_bundle(path: Path | None = None) -> ModelBundle:
     return load_model_bundle(target)
 
 
-def _format_history_snippet(history: list[dict], *, max_turns: int = 3) -> str:
-    if not history:
-        return "(sem histórico anterior)"
-    tail = history[-(max_turns * 2) :]
-    lines: list[str] = []
-    for m in tail:
-        role = m.get("role", "?")
-        content = str(m.get("content") or "").strip()
-        if not content:
-            continue
-        label = "Usuário" if role == "user" else "Assistente"
-        lines.append(f"{label}: {content[:400]}")
-    return "\n".join(lines) if lines else "(sem histórico anterior)"
-
-
 def _build_feature_schema_text(bundle: ModelBundle) -> str:
     try:
         catalog = load_dataset_catalog(bundle.catalog_id)
     except FileNotFoundError:
         catalog = None
     lines: list[str] = []
+
+    if catalog is not None:
+        lines.append("#### Colunas disponíveis no dataset AbRank (entrada possível)")
+        for col_name in catalog.input_feature_column_names():
+            desc = catalog.description_for(col_name)
+            line = f"- `{col_name}`"
+            if desc:
+                line += f": {desc}"
+            lines.append(line)
+        lines.append("")
+
+    lines.append("#### Colunas que ESTE arquivo .pkl usa na inferência (obrigatórias no JSON)")
     for col in bundle.feature_columns:
-        desc = ""
-        if catalog is not None:
-            desc = catalog.description_for(col)
+        desc = catalog.description_for(col) if catalog else ""
         line = f"- `{col}`"
         if desc:
             line += f": {desc}"
         lines.append(line)
+
+    if catalog is not None:
+        missing_in_model = [
+            c for c in catalog.input_feature_column_names() if c not in bundle.feature_columns
+        ]
+        if missing_in_model:
+            lines.append(
+                "\n_Outras colunas do dataset só entram na predição após **retreinar** o modelo "
+                f"incluindo-as nas features (ex.: {', '.join(f'`{c}`' for c in missing_in_model[:6])}"
+                f"{'…' if len(missing_in_model) > 6 else ''})._"
+            )
+
     task = getattr(bundle, "task", "classification")
     target = bundle.target_column
     lines.append(f"\nTarefa: **{task}** · coluna-alvo no treino: `{target}`")
@@ -110,6 +132,77 @@ def _build_feature_schema_text(bundle: ModelBundle) -> str:
             "A saída da predição é `predicao_log_aff` (log de afinidade Ab–Ag, benchmark AbRank)."
         )
     return "\n".join(lines)
+
+
+def _coerce_feature_value(raw: str, column: str) -> object:
+    text = str(raw).strip().strip("\"'")
+    if not text:
+        return pd.NA
+    lower_col = column.lower()
+    if "agtype" in lower_col or column in {"Agtype"}:
+        return text
+    try:
+        if "." in text or "e" in text.lower():
+            return float(text.replace(",", "."))
+        return int(text)
+    except ValueError:
+        return text
+
+
+def _column_name_map(bundle: ModelBundle) -> dict[str, str]:
+    return {normalize_column_name(c): c for c in bundle.feature_columns}
+
+
+def extract_features_rule_based(message: str, bundle: ModelBundle) -> list[dict]:
+    """
+    Extrai features da mensagem com regex (sem LLM).
+
+    Cobre o formato comum no chat: ``Agtype X`` e ``coluna = valor`` separados por vírgula ou `` e ``.
+    """
+    col_map = _column_name_map(bundle)
+    row: dict[str, object] = {}
+
+    param_section = message
+    parts = re.split(r"parâmetros\s*:", message, maxsplit=1, flags=re.IGNORECASE)
+    if len(parts) > 1:
+        param_section = parts[1]
+
+    for chunk in re.split(r",|\s+e\s+", param_section, flags=re.IGNORECASE):
+        chunk = chunk.strip().strip(".")
+        if not chunk or "=" not in chunk:
+            continue
+        key_part, _, val_part = chunk.partition("=")
+        key_norm = normalize_column_name(key_part)
+        canonical = col_map.get(key_norm)
+        if canonical:
+            row[canonical] = _coerce_feature_value(val_part, canonical)
+
+    for match in _ASSIGNMENT_RE.finditer(message):
+        key_norm = normalize_column_name(match.group("key"))
+        canonical = col_map.get(key_norm)
+        if canonical and canonical not in row:
+            row[canonical] = _coerce_feature_value(match.group("val"), canonical)
+
+    agtype_match = _AGTYPE_INLINE_RE.search(message)
+    if agtype_match and "agtype" in col_map:
+        canonical = col_map["agtype"]
+        row[canonical] = agtype_match.group("val")
+
+    for col in bundle.feature_columns:
+        if col in row:
+            continue
+        escaped = re.escape(col)
+        direct = re.search(
+            rf"{escaped}\s*[:=]\s*([^,;\n]+)",
+            message,
+            re.IGNORECASE,
+        )
+        if direct:
+            row[col] = _coerce_feature_value(direct.group(1), col)
+
+    if not row:
+        return []
+    return [row]
 
 
 def _parse_extract_json(raw: str) -> tuple[list[dict], str | None]:
@@ -153,7 +246,11 @@ def extract_prediction_rows(
     schema = _build_feature_schema_text(bundle)
     user_block = _EXTRACT_USER_TEMPLATE.format(
         schema=schema,
-        history=_format_history_snippet(history),
+        history=format_history_snippet(
+            history,
+            max_turns=chat_max_history_turns(ml_route=True),
+            max_chars_per_message=chat_history_chars_per_message(ml_route=True),
+        ),
         message=message.strip(),
     )
     try:
@@ -268,7 +365,16 @@ def run_chat_ml_inference(
         model=model,
         bundle=loaded,
     )
+    if extract_err or not rows:
+        rule_rows = extract_features_rule_based(message, loaded)
+        if rule_rows:
+            rows = rule_rows
+            extract_err = None
+            raw = raw or json.dumps({"rows": rows, "source": "rule_based"}, ensure_ascii=False)
     if extract_err:
+        present = rows[0] if rows else {}
+        missing = [c for c in loaded.feature_columns if c not in present]
+        hint = ", ".join(f"`{c}`" for c in missing[:8])
         return MlInferResult(
             ok=False,
             model_path=str(path),
@@ -277,8 +383,8 @@ def run_chat_ml_inference(
             context_for_llm=(
                 "### Predição ML (dados insuficientes)\n"
                 f"{extract_err}\n\n"
-                "Peça ao usuário os valores das features listadas no esquema, "
-                "sem inventar números."
+                f"Features ainda não identificadas na mensagem: {hint or '(todas)'}. "
+                "Peça ao usuário os valores com nomes exatos das colunas, sem inventar números."
             ),
         )
 

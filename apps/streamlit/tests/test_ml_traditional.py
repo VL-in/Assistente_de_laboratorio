@@ -117,14 +117,25 @@ class TestMlAbrankDataset(unittest.TestCase):
         features = default_feature_columns(self.df, self.catalog)
         self.assertNotIn("Ab_name", features)
         self.assertNotIn(self.catalog.default_target, features)
-        self.assertNotIn("Ag_epitope_restrictions", features)
-        self.assertNotIn("IC50 [ug/mL]", features)
-        self.assertIn("Agtype", features)
+        self.assertNotIn("Ab_heavy_chain_seq", features)
+        self.assertNotIn("Ag_seq", features)
+        if "Ab25_cluster" in self.df.columns and self.df["Ab25_cluster"].notna().any():
+            self.assertIn("Ab25_cluster", features)
+        if "IC50 [ug/mL]" in self.df.columns and self.df["IC50 [ug/mL]"].notna().any():
+            self.assertIn("IC50 [ug/mL]", features)
+
+    def test_catalog_input_features(self) -> None:
+        names = self.catalog.input_feature_column_names()
+        self.assertIn("Ab25_cluster", names)
+        self.assertIn("escape", names)
+        self.assertNotIn("Ab_name", names)
+        self.assertNotIn("log_Aff", names)
 
     def test_catalog_excluded_columns(self) -> None:
         excluded = self.catalog.columns_excluded_from_features()
         self.assertIn("Ab_name", excluded)
         self.assertIn("log_Aff", excluded)
+        self.assertIn("Ab_heavy_chain_seq", excluded)
 
     def test_prepare_regression_matrix(self) -> None:
         features = default_feature_columns(self.df, self.catalog)[:4]

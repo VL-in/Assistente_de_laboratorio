@@ -44,8 +44,11 @@ from llm_config import (
 )
 from chat_router import classification_needs_llm, resolve_chat_routes
 from qwen35_inference import (
-    DEFAULT_CHAT_MAX_TOKENS,
+    chat_history_chars_per_message,
+    chat_max_history_turns,
+    chat_max_tokens,
     create_chat_completion,
+    effective_chat_limits,
     env_enable_thinking_default,
     is_qwen35_model,
     iter_stream_answer_text,
@@ -132,6 +135,26 @@ Estamos trabalhando em um laboratório de p&D que está com projeto de ELISA ati
 Sempre use a mesma língua do usuário. Por padrão, utilize português brasileiro. Seja cordial, profissional, objetivo e educado.
 </invocation>"""
 )
+
+CHAT_ML_SYSTEM_PROMPT = (
+    """<role>
+Você é um assistente de laboratório que interpreta predições de um modelo de ML já treinado (afinidade Ab–Ag, benchmark AbRank).
+</role>
+
+<constraints>
+- A predição numérica JÁ FOI CALCULADA localmente e está no bloco "Resultado da inferência ML" abaixo.
+- Use SOMENTE os valores dessa tabela na resposta. Não diga que falta acesso a documentos ou planilhas para esta pergunta.
+- Não peça ao usuário para buscar documentos quando a tabela de predição estiver presente.
+- Se o bloco indicar falha ou dados insuficientes, explique o que falta (nomes exatos das colunas) sem inventar números.
+- Seja objetivo: 2–3 parágrafos curtos com o valor de `predicao_log_aff` (ou `predicao`) e interpretação breve.
+- Ao final, pergunte se pode ajudar com mais alguma dúvida.
+</constraints>
+
+<invocation>
+Responda em português brasileiro, cordial e profissional.
+</invocation>"""
+)
+
 
 st.set_page_config(
     page_title="Assistente Lab",
@@ -303,24 +326,35 @@ def _check_openai_compatible_models(base_url: str, *, timeout_s: float = 5.0) ->
         return False, str(e)
 
 
-def _trim_chat_history(messages: list[dict], max_turns: int) -> list[dict]:
+def _trim_chat_history(
+    messages: list[dict],
+    max_turns: int,
+    *,
+    max_chars_per_message: int | None = None,
+) -> list[dict]:
     """
     Retorna os últimos ``max_turns`` pares (user + assistant) do histórico.
 
     Cada "turno" corresponde a 2 mensagens (1 do usuário + 1 do assistente),
     portanto o limite em mensagens é ``max_turns × 2``.
 
-    Sem truncagem, o histórico cresce sem limite e o prompt total (system
-    prompt + contexto RAG até 12 k chars + histórico) pode ultrapassar a
-    janela de contexto do modelo, causando respostas truncadas ou erros
-    silenciosos dependendo do backend LLM.
+    Com ``max_chars_per_message``, encurta cada mensagem (útil na rota ML,
+    onde respostas longas do assistente não precisam ir inteiras ao prompt).
     """
     if max_turns <= 0:
         return []
-    max_msgs = max_turns * 2  # cada turno = 1 mensagem do usuário + 1 do assistente
-    if len(messages) <= max_msgs:
-        return messages
-    return messages[-max_msgs:]
+    max_msgs = max_turns * 2
+    trimmed = messages if len(messages) <= max_msgs else messages[-max_msgs:]
+    if not max_chars_per_message or max_chars_per_message <= 0:
+        return trimmed
+    out: list[dict] = []
+    for m in trimmed:
+        role = m.get("role", "user")
+        content = str(m.get("content") or "")
+        if len(content) > max_chars_per_message:
+            content = content[:max_chars_per_message] + "…"
+        out.append({"role": role, "content": content})
+    return out
 
 
 # ── Barra lateral ────────────────────────────────────────────────────────────
@@ -902,8 +936,14 @@ def _chat_effective_options() -> dict:
         "use_olap": use_olap and has_ingested_tables(),
         "use_ml": use_ml and chat_ml_model_available(),
         "rag_top_k": int(st.session_state.get("dev_chat_rag_top_k", 6)),
-        "max_tokens": int(st.session_state.get("dev_chat_max_tokens", DEFAULT_CHAT_MAX_TOKENS)),
-        "max_history_turns": int(st.session_state.get("dev_chat_max_history_turns", 8)),
+        "max_tokens": int(
+            st.session_state.get("dev_chat_max_tokens", chat_max_tokens(ml_route=False))
+        ),
+        "max_history_turns": int(
+            st.session_state.get(
+                "dev_chat_max_history_turns", chat_max_history_turns(ml_route=False)
+            )
+        ),
         "use_thinking": bool(st.session_state.get("dev_chat_use_thinking", env_enable_thinking_default())),
         "use_stream": bool(st.session_state.get("chat_use_stream", True)),
     }
@@ -962,9 +1002,24 @@ def _tab_chat_dev_controls() -> None:
     with c4:
         st.number_input("Trechos", 1, 20, 6, key="dev_chat_rag_top_k")
     with c5:
-        st.number_input("Máx. tokens", 256, 32768, DEFAULT_CHAT_MAX_TOKENS, step=256, key="dev_chat_max_tokens")
+        st.number_input(
+            "Máx. tokens",
+            256,
+            32768,
+            int(chat_max_tokens(ml_route=False)),
+            step=256,
+            key="dev_chat_max_tokens",
+            help="Na rota de predição ML, o teto efetivo é CHAT_ML_MAX_TOKENS (padrão 768).",
+        )
     with c6:
-        st.number_input("Turnos no histórico", 1, 30, 8, key="dev_chat_max_history_turns")
+        st.number_input(
+            "Turnos no histórico",
+            1,
+            30,
+            int(chat_max_history_turns(ml_route=False)),
+            key="dev_chat_max_history_turns",
+            help="Na rota ML, usa no máximo CHAT_ML_MAX_HISTORY_TURNS (padrão 2).",
+        )
 
     scans: list[ProjectScan] | None = st.session_state.get("last_scan")
     if scans and st.session_state.get("dev_chat_override"):
@@ -1073,7 +1128,7 @@ def _tab_chat() -> None:
                 )
             )
 
-        system_prompt = CHAT_SYSTEM_PROMPT
+        system_prompt = CHAT_ML_SYSTEM_PROMPT if run_ml else CHAT_SYSTEM_PROMPT
         if run_rag:
             hits = rag_semantic_search(
                 prompt, int(rag_top_k), project_ids=rag_project_ids
@@ -1120,7 +1175,7 @@ def _tab_chat() -> None:
                         st.code(ml_result.raw_llm_response, language="json")
                     if ml_result.error and not ml_result.ok:
                         st.warning(ml_result.error)
-            elif ml_result.error and not ml_result.ok:
+            elif ml_result.error and not ml_result.ok and not ml_result.context_for_llm:
                 system_prompt += (
                     f"\n\n### Predição ML (falha)\n{ml_result.error}\n"
                     "Explique o problema e o que o usuário precisa informar."
@@ -1159,9 +1214,23 @@ def _tab_chat() -> None:
                     "Explique o problema ao usuário sem inventar números de planilhas."
                 )
 
-        history_trimmed = _trim_chat_history(
-            st.session_state.chat_messages, int(max_history_turns)
+        reply_max_tokens, history_turns = effective_chat_limits(
+            run_ml=run_ml,
+            max_tokens=int(max_tokens),
+            max_history_turns=int(max_history_turns),
         )
+        history_chars = chat_history_chars_per_message(ml_route=run_ml)
+        history_trimmed = _trim_chat_history(
+            st.session_state.chat_messages,
+            int(history_turns),
+            max_chars_per_message=history_chars,
+        )
+        if show_dev_details and run_ml:
+            st.caption(
+                f"Limites ML: max_tokens={reply_max_tokens} · "
+                f"histórico={history_turns} turno(s) · "
+                f"{history_chars} chars/msg"
+            )
         api_messages = [{"role": "system", "content": system_prompt}]
         api_messages += [
             {
@@ -1187,7 +1256,7 @@ def _tab_chat() -> None:
                             messages=api_messages,
                             model=model,
                             profile=chat_profile,
-                            max_tokens=int(max_tokens),
+                            max_tokens=int(reply_max_tokens),
                             stream=True,
                         )
 
@@ -1206,7 +1275,7 @@ def _tab_chat() -> None:
                                 messages=api_messages,
                                 model=model,
                                 profile=chat_profile,
-                                max_tokens=int(max_tokens),
+                                max_tokens=int(reply_max_tokens),
                                 stream=False,
                             )
                         raw = (completion.choices[0].message.content or "").strip()

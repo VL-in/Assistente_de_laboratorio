@@ -95,44 +95,65 @@ def prepare_feature_matrix(
     return x, y
 
 
+def _series_has_values(series: pd.Series) -> bool:
+    return bool(series.notna().sum())
+
+
+def _is_long_text_series(series: pd.Series, *, max_len: int = 64) -> bool:
+    if not (pd.api.types.is_object_dtype(series) or pd.api.types.is_string_dtype(series)):
+        return False
+    sample = series.dropna().astype(str).head(200)
+    if sample.empty:
+        return False
+    return int(sample.str.len().max()) > max_len
+
+
 def default_feature_columns(
     df: pd.DataFrame,
     catalog: DatasetCatalog,
     *,
     exclude: set[str] | None = None,
 ) -> list[str]:
-    """Sugere features numéricas excluindo colunas do catálogo e alvo."""
+    """
+    Sugere todas as colunas utilizáveis do AbRank: clusters, ensaios (IC50, Kd), escape, métodos, etc.
+
+    Exclui identificadores, sequências de aminoácidos, PDB IDs, alvo e colunas sem dados.
+    """
     exclude = exclude or set()
     exclude |= catalog.columns_excluded_from_features()
-
-    numeric_cols: list[str] = []
     hinted_numeric = set(catalog.feature_hints.get("numeric") or [])
     hinted_categorical = set(catalog.feature_hints.get("categorical") or [])
+    catalog_input = set(catalog.input_feature_column_names())
+
+    selected: set[str] = set()
+
+    for col_name in catalog_input:
+        if col_name in exclude or col_name not in df.columns:
+            continue
+        if _series_has_values(df[col_name]):
+            selected.add(col_name)
 
     for col in df.columns:
-        if col in exclude:
+        if col in exclude or col in selected:
             continue
         if catalog.merge_key and col == catalog.merge_key:
             continue
         series = df[col]
-        if col in hinted_numeric and col not in exclude:
-            if series.notna().sum() > 0:
-                numeric_cols.append(col)
+        if not _series_has_values(series):
+            continue
+        if _is_long_text_series(series):
+            continue
+        if col in hinted_numeric or col in hinted_categorical:
+            selected.add(col)
             continue
         if pd.api.types.is_numeric_dtype(series):
-            if series.notna().sum() == 0:
-                continue
-            numeric_cols.append(col)
+            selected.add(col)
             continue
         if "ABS" in str(col).upper():
-            numeric_cols.append(col)
+            selected.add(col)
             continue
         if pd.api.types.is_object_dtype(series) or pd.api.types.is_string_dtype(series):
-            sample = series.dropna().astype(str).head(200)
-            if sample.empty:
-                continue
-            if sample.str.len().max() > 64:
-                continue
-            if col in hinted_categorical:
-                numeric_cols.append(col)
-    return sorted(set(numeric_cols))
+            if series.nunique(dropna=True) <= 64:
+                selected.add(col)
+
+    return sorted(selected)
