@@ -3,6 +3,7 @@ Roteamento de intenção do chat — decide se RAG e/ou OLAP rodam nesta mensage
 
 Usa regras rápidas para saudações óbvias e um classificador LLM leve para o resto.
 Não aplica limiar de score no RAG (a busca só roda quando ``use_documents`` é true).
+A inferência ML só roda quando ``use_ml`` é true (pedido explícito de predição).
 """
 
 from __future__ import annotations
@@ -25,15 +26,17 @@ _JSON_OBJECT = re.compile(r"\{[^{}]*\}", re.DOTALL)
 _ROUTER_SYSTEM = """Você classifica a intenção da última mensagem do usuário em um chat de laboratório de P&D (ELISA, documentos Word, planilhas).
 
 Responda APENAS com um objeto JSON válido, sem markdown e sem texto extra:
-{"documents": true ou false, "spreadsheets": true ou false}
+{"documents": true ou false, "spreadsheets": true ou false, "ml_prediction": true ou false}
 
 documents=true quando a mensagem pede ou pressupõe informação de experimentos, insumos, lotes, validades, materiais, protocolos, documentos, histórico de ensaios, ou é continuação disso (ex.: "e a validade?", "qual lote?").
 
 spreadsheets=true quando pede análise de dados tabulares: contagens, totais, médias, somas, comparações, rankings, filtros em planilhas/CSV, agregações.
 
-Ambos false para saudação, despedida, agradecimento, conversa social, meta sobre o assistente, ou mensagem sem pedido de dado do laboratório.
+ml_prediction=true SOMENTE quando o usuário pede EXPLICITAMENTE predição, inferência ou estimativa pelo modelo/algoritmo de ML treinado (ex.: prever log_Aff, afinidade Ab–Ag, "rode o modelo", "faça a predição"). NÃO marque true para perguntas gerais sobre experimentos, documentos ou planilhas sem pedido claro de predição ML.
 
-Se ambos tipos se aplicarem, marque os dois como true."""
+Ambos false (e ml_prediction false) para saudação, despedida, agradecimento, conversa social, meta sobre o assistente, ou mensagem sem pedido de dado do laboratório.
+
+Se vários tipos se aplicarem, marque cada um como true."""
 
 _SOCIAL_ONLY = re.compile(
     r"^\s*(?:"
@@ -57,6 +60,16 @@ _LAB_DOC_HINT = re.compile(
     re.IGNORECASE,
 )
 
+_ML_HINT = re.compile(
+    r"\b(?:"
+    r"predi[çc][ãa]o|predizer|prever|previs[ãa]o|infer[êe]ncia|inferir|"
+    r"modelo\s+ml|algoritmo\s+ml|machine\s+learning|"
+    r"log_aff|log\s+aff|afinidade\s+ab|abrank|"
+    r"estim(?:e|ar)\s+(?:a\s+)?afinidade|rodar\s+o\s+modelo"
+    r")\b",
+    re.IGNORECASE,
+)
+
 _TABULAR_HINT = re.compile(
     r"\b(?:"
     r"planilha|tabela|csv|xlsx|"
@@ -74,7 +87,8 @@ class ChatRouteDecision:
 
     use_documents: bool
     use_spreadsheets: bool
-    source: str  # "rules" | "llm" | "rules_fallback" | "disabled"
+    use_ml: bool
+    source: str  # "rules" | "llm" | "rules_fallback" | "disabled" | "manual"
 
 
 def classification_needs_llm(message: str) -> bool:
@@ -119,7 +133,7 @@ def _format_history_snippet(history: list[dict], *, max_turns: int = 3) -> str:
     return "\n".join(lines) if lines else "(sem histórico anterior)"
 
 
-def _parse_router_json(raw: str) -> tuple[bool, bool] | None:
+def _parse_router_json(raw: str) -> tuple[bool, bool, bool] | None:
     text = strip_thinking_blocks((raw or "").strip())
     if not text:
         return None
@@ -137,20 +151,24 @@ def _parse_router_json(raw: str) -> tuple[bool, bool] | None:
         return None
     docs = data.get("documents")
     sheets = data.get("spreadsheets")
+    ml = data.get("ml_prediction", False)
     if not isinstance(docs, bool) or not isinstance(sheets, bool):
         return None
-    return docs, sheets
+    if not isinstance(ml, bool):
+        ml = False
+    return docs, sheets, ml
 
 
 def _rule_fallback_route(message: str) -> ChatRouteDecision:
     """Fallback conservador se o LLM falhar (sem limiar de score no RAG)."""
     if _is_social_only(message):
-        return ChatRouteDecision(False, False, "rules_fallback")
-    docs = bool(_LAB_DOC_HINT.search(message))
-    sheets = bool(_TABULAR_HINT.search(message))
-    if not docs and not sheets and len(message.split()) <= 3:
-        return ChatRouteDecision(False, False, "rules_fallback")
-    return ChatRouteDecision(docs, sheets, "rules_fallback")
+        return ChatRouteDecision(False, False, False, "rules_fallback")
+    ml = bool(_ML_HINT.search(message))
+    docs = bool(_LAB_DOC_HINT.search(message)) and not ml
+    sheets = bool(_TABULAR_HINT.search(message)) and not ml
+    if not docs and not sheets and not ml and len(message.split()) <= 3:
+        return ChatRouteDecision(False, False, False, "rules_fallback")
+    return ChatRouteDecision(docs, sheets, ml, "rules_fallback")
 
 
 def _apply_availability(
@@ -158,10 +176,12 @@ def _apply_availability(
     *,
     documents_available: bool,
     spreadsheets_available: bool,
+    ml_available: bool,
 ) -> ChatRouteDecision:
     return ChatRouteDecision(
         use_documents=decision.use_documents and documents_available,
         use_spreadsheets=decision.use_spreadsheets and spreadsheets_available,
+        use_ml=decision.use_ml and ml_available,
         source=decision.source,
     )
 
@@ -197,8 +217,8 @@ def classify_with_llm(
     parsed = _parse_router_json(raw)
     if parsed is None:
         return None
-    docs, sheets = parsed
-    return ChatRouteDecision(docs, sheets, "llm")
+    docs, sheets, ml = parsed
+    return ChatRouteDecision(docs, sheets, ml, "llm")
 
 
 def classify_chat_routes(
@@ -209,6 +229,7 @@ def classify_chat_routes(
     model: str = "",
     documents_available: bool = False,
     spreadsheets_available: bool = False,
+    ml_available: bool = False,
 ) -> ChatRouteDecision:
     """
     Decide se esta mensagem deve acionar RAG (documentos) e/ou OLAP (planilhas).
@@ -221,7 +242,7 @@ def classify_chat_routes(
         Mensagens anteriores (sem a mensagem atual), para follow-ups.
     client, model:
         Obrigatórios para o classificador LLM (exceto saudações e fallback).
-    documents_available / spreadsheets_available:
+    documents_available / spreadsheets_available / ml_available:
         Se o backend não estiver pronto, força false no respectivo flag.
     """
     msg = _normalize_message(message)
@@ -229,13 +250,14 @@ def classify_chat_routes(
 
     if not router_enabled():
         return _apply_availability(
-            ChatRouteDecision(True, True, "disabled"),
+            ChatRouteDecision(True, True, False, "disabled"),
             documents_available=documents_available,
             spreadsheets_available=spreadsheets_available,
+            ml_available=ml_available,
         )
 
     if _is_social_only(msg):
-        return ChatRouteDecision(False, False, "rules")
+        return ChatRouteDecision(False, False, False, "rules")
 
     if client is not None and model:
         llm_decision = classify_with_llm(msg, history=hist, client=client, model=model)
@@ -244,6 +266,7 @@ def classify_chat_routes(
                 llm_decision,
                 documents_available=documents_available,
                 spreadsheets_available=spreadsheets_available,
+                ml_available=ml_available,
             )
 
     fallback = _rule_fallback_route(msg)
@@ -251,6 +274,7 @@ def classify_chat_routes(
         fallback,
         documents_available=documents_available,
         spreadsheets_available=spreadsheets_available,
+        ml_available=ml_available,
     )
 
 
@@ -262,6 +286,7 @@ def resolve_chat_routes(
     model: str = "",
     documents_enabled: bool,
     spreadsheets_enabled: bool,
+    ml_enabled: bool = False,
     manual_override: bool = False,
 ) -> ChatRouteDecision:
     """
@@ -273,6 +298,7 @@ def resolve_chat_routes(
         return ChatRouteDecision(
             use_documents=documents_enabled,
             use_spreadsheets=spreadsheets_enabled,
+            use_ml=ml_enabled,
             source="manual",
         )
     return classify_chat_routes(
@@ -282,4 +308,5 @@ def resolve_chat_routes(
         model=model,
         documents_available=documents_enabled,
         spreadsheets_available=spreadsheets_enabled,
+        ml_available=ml_enabled,
     )
