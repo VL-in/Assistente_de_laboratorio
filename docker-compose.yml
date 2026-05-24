@@ -16,6 +16,8 @@ services:
       ASSISTENTE_TXTAI_DIR: /data/txtai
       ASSISTENTE_DUCKDB_DIR: /data/duckdb
       ASSISTENTE_ML_DIR: /data/ml
+      KAGGLEHUB_CACHE: /data/ml/kagglehub
+      KAGGLE_API_TOKEN: ${KAGGLE_API_TOKEN:-}
       LLM_BASE_URL: ${LLM_BASE_URL:-http://192.168.15.7:1234}
       LLM_MODEL: ${LLM_MODEL:-qwen3.5-9b-mtp}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-lm-studio}

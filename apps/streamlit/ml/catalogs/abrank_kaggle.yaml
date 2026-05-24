@@ -1,0 +1,135 @@
+# AbRank — benchmark de afinidade anticorpo–antígeno (Kaggle)
+# Paper: https://arxiv.org/html/2506.17857v2
+# Dataset: https://www.kaggle.com/datasets/aurlienplissier/abrank
+
+dataset_id: abrank_kaggle
+display_name: "AbRank (Kaggle) — afinidade Ab–Ag"
+kaggle_handle: aurlienplissier/abrank
+kaggle_split_file: Benchmarks/train_regression.csv
+csv_separator: "\t"
+
+ml_task: regression
+default_target: log_Aff
+default_metric: r2
+
+# Identificadores e textos longos — não usar como feature direta
+suggested_drop:
+  - Ab_name
+  - Ag_name
+  - Ag_name_details
+  - AbAg_name
+  - AbAgID
+  - Source
+  - Aff_op
+
+feature_hints:
+  numeric:
+    - "IC50 [ug/mL]"
+    - "Affinity_Kd [nM]"
+    - escape
+    - "log(Kd_ratio)"
+    - Ab25_cluster
+    - Ag25_cluster
+    - log_Aff
+  categorical:
+    - Agtype
+
+columns:
+  - name: Ab_name
+    role: identifier
+    dtype: text
+    description: Identificador do anticorpo no benchmark AbRank.
+    ml_use: exclude
+
+  - name: Ag_name
+    role: identifier
+    dtype: text
+    description: Identificador do antígeno associado ao par Ab–Ag.
+    ml_use: exclude
+
+  - name: Ag_name_details
+    role: metadata
+    dtype: text
+    description: Descrição textual do antígeno (epítopo, proteína, etc.).
+    ml_use: exclude
+
+  - name: Agtype
+    role: covariate
+    dtype: category
+    description: Família ou tipo de antígeno (ex. SARS-CoV-2, HIV, HER2).
+    ml_use: feature
+
+  - name: "IC50 [ug/mL]"
+    role: assay_readout
+    dtype: float
+    description: IC50 em µg/mL quando disponível na fonte original.
+    ml_use: optional_feature
+    notes: Muitos valores ausentes — o modelo usa imputação mediana.
+
+  - name: "Affinity_Kd [nM]"
+    role: assay_readout
+    dtype: float
+    description: Constante de dissociação Kd em nM.
+    ml_use: optional_feature
+
+  - name: escape
+    role: covariate
+    dtype: float
+    description: Indicador relacionado a mutações de escape (quando aplicável).
+    ml_use: optional_feature
+
+  - name: "log(Kd_ratio)"
+    role: derived
+    dtype: float
+    description: Logaritmo da razão de Kd em ensaios comparativos.
+    ml_use: optional_feature
+
+  - name: Ag_epitope_restrictions
+    role: metadata
+    dtype: float
+    description: Restrições de epítopo codificadas na base original.
+    ml_use: exclude
+
+  - name: Source
+    role: metadata
+    dtype: text
+    description: Base de dados de origem do registro (SKEMPI, SAbDab, etc.).
+    ml_use: exclude
+
+  - name: Ab25_cluster
+    role: cluster
+    dtype: int
+    description: Cluster de sequência do anticorpo (25% identidade).
+    ml_use: feature
+
+  - name: Ag25_cluster
+    role: cluster
+    dtype: int
+    description: Cluster de sequência do antígeno (25% identidade).
+    ml_use: feature
+
+  - name: AbAg_name
+    role: identifier
+    dtype: text
+    description: Nome composto do complexo anticorpo–antígeno.
+    ml_use: exclude
+
+  - name: AbAgID
+    role: identifier
+    dtype: text
+    description: Identificador interno do par Ab–Ag.
+    ml_use: exclude
+
+  - name: log_Aff
+    role: target
+    dtype: float
+    description: >
+      Log da afinidade (alvo principal para regressão).
+      Valores maiores indicam maior afinidade de ligação.
+    ml_use: target
+
+  - name: Aff_op
+    role: auxiliary
+    dtype: category
+    description: Operador de comparação de afinidade (=, >, <) em registros pareados.
+    ml_use: exclude

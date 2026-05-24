@@ -6,18 +6,11 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from pathlib import Path
 
 import pandas as pd
 
 from ml.dictionary import DatasetCatalog, load_dataset_catalog
-from ml.paths import resolve_dengue_results_dir
-
-AMOSTRAS_FILE = "amostras_dengue.xlsx"
-AMOSTRAS_SHEET = "Amostras"
-COMPILADO_FILE = "Compilado_resultado_otimizacao.xlsx"
-COMPILADO_SHEET = "Planilha1"
-MERGE_KEY = "ID amostra"
+from ml.kaggle_sources import load_kaggle_csv
 
 
 def normalize_column_name(name: str) -> str:
@@ -29,54 +22,32 @@ def normalize_column_name(name: str) -> str:
     return text
 
 
-def align_catalog_columns(df: pd.DataFrame, catalog: DatasetCatalog) -> dict[str, str]:
-    """
-    Mapeia nomes canônicos do catálogo → nomes reais no DataFrame.
-
-    Útil quando o Excel grava acentos de forma inconsistente entre máquinas.
-    """
-    index = {normalize_column_name(col): col for col in df.columns}
-    mapping: dict[str, str] = {}
-    for spec in catalog.columns:
-        canonical = spec.name
-        if canonical in df.columns:
-            mapping[canonical] = canonical
-            continue
-        hit = index.get(normalize_column_name(canonical))
-        if hit:
-            mapping[canonical] = hit
-    return mapping
-
-
-def load_dengue_elisa_253(
-    results_dir: Path | None = None,
-    *,
+def load_dataset_from_catalog(
     catalog: DatasetCatalog | None = None,
+    *,
+    catalog_id: str | None = None,
+    max_rows: int | None = None,
+    force_download: bool = False,
 ) -> tuple[pd.DataFrame, DatasetCatalog]:
     """
-    Carrega e junta as planilhas do projeto 253 (amostras + compilado ELISA).
-
-    Retorna o DataFrame merged e o catálogo de colunas.
+    Carrega o dataset descrito no catálogo YAML (fonte Kaggle).
     """
-    catalog = catalog or load_dataset_catalog()
-    base = (results_dir or resolve_dengue_results_dir()).resolve()
-    amostras_path = base / AMOSTRAS_FILE
-    compilado_path = base / COMPILADO_FILE
-    missing = [p.name for p in (amostras_path, compilado_path) if not p.is_file()]
-    if missing:
-        raise FileNotFoundError(
-            f"Arquivo(s) ausente(s) em `{base}`: {', '.join(missing)}. "
-            "Configure ASSISTENTE_ML_DENGUE_RESULTS ou monte a pasta Projetos no Docker."
+    catalog = catalog or load_dataset_catalog(catalog_id)
+    if not catalog.is_kaggle:
+        raise ValueError(
+            f"Catálogo `{catalog.dataset_id}` sem fonte Kaggle. "
+            "O pipeline ML suporta apenas datasets Kaggle (ex.: AbRank)."
         )
-
-    amostras = pd.read_excel(amostras_path, sheet_name=AMOSTRAS_SHEET)
-    compilado = pd.read_excel(compilado_path, sheet_name=COMPILADO_SHEET)
-    key = catalog.merge_key if catalog.merge_key in amostras.columns else MERGE_KEY
-    if key not in amostras.columns or key not in compilado.columns:
-        raise ValueError(f"Coluna de junção `{key}` não encontrada nas planilhas.")
-
-    merged = amostras.merge(compilado, on=key, how=catalog.merge_how)
-    return merged, catalog
+    if not catalog.kaggle_split_file:
+        raise ValueError(f"Catálogo `{catalog.dataset_id}` sem `kaggle_split_file`.")
+    df = load_kaggle_csv(
+        catalog.kaggle_handle,
+        catalog.kaggle_split_file,
+        separator=catalog.csv_separator,
+        max_rows=max_rows,
+        force_download=force_download,
+    )
+    return df, catalog
 
 
 def coerce_abs_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -97,6 +68,7 @@ def prepare_feature_matrix(
     feature_columns: list[str],
     target_column: str,
     drop_na_target: bool = True,
+    regression_target: bool = False,
 ) -> tuple[pd.DataFrame, pd.Series]:
     """Separa X/y e remove linhas sem alvo quando solicitado."""
     missing_features = [c for c in feature_columns if c not in df.columns]
@@ -112,6 +84,12 @@ def prepare_feature_matrix(
         mask = y.notna() & (y.astype(str).str.strip() != "")
         work = work.loc[mask]
         y = work[target_column]
+        if regression_target:
+            numeric_target = pd.to_numeric(y, errors="coerce")
+            if numeric_target.notna().sum() > len(y) * 0.5:
+                valid = numeric_target.notna()
+                work = work.loc[valid]
+                y = numeric_target.loc[valid]
 
     x = work[feature_columns].copy()
     return x, y
@@ -125,19 +103,36 @@ def default_feature_columns(
 ) -> list[str]:
     """Sugere features numéricas excluindo colunas do catálogo e alvo."""
     exclude = exclude or set()
-    exclude |= set(catalog.suggested_drop)
-    exclude.add(catalog.default_target)
+    exclude |= catalog.columns_excluded_from_features()
 
     numeric_cols: list[str] = []
+    hinted_numeric = set(catalog.feature_hints.get("numeric") or [])
+    hinted_categorical = set(catalog.feature_hints.get("categorical") or [])
+
     for col in df.columns:
         if col in exclude:
             continue
-        if col == catalog.merge_key:
+        if catalog.merge_key and col == catalog.merge_key:
             continue
         series = df[col]
+        if col in hinted_numeric and col not in exclude:
+            if series.notna().sum() > 0:
+                numeric_cols.append(col)
+            continue
         if pd.api.types.is_numeric_dtype(series):
+            if series.notna().sum() == 0:
+                continue
             numeric_cols.append(col)
             continue
         if "ABS" in str(col).upper():
             numeric_cols.append(col)
+            continue
+        if pd.api.types.is_object_dtype(series) or pd.api.types.is_string_dtype(series):
+            sample = series.dropna().astype(str).head(200)
+            if sample.empty:
+                continue
+            if sample.str.len().max() > 64:
+                continue
+            if col in hinted_categorical:
+                numeric_cols.append(col)
     return sorted(set(numeric_cols))
