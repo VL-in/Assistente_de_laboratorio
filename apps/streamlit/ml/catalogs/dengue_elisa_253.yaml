@@ -1,0 +1,132 @@
+# Catálogo de dados — projeto 253 ELISA indireto Dengue
+# Edite descrições e sugestões conforme o protocolo evoluir.
+
+dataset_id: dengue_elisa_253
+display_name: "ELISA indireto Dengue (projeto 253)"
+project_folder: "253 - ELISA indireto Dengue"
+results_subdir: results
+
+source_files:
+  - file: amostras_dengue.xlsx
+    sheet: Amostras
+    role: metadados_amostra
+  - file: Compilado_resultado_otimizacao.xlsx
+    sheet: Planilha1
+    role: leituras_elisa
+
+merge:
+  key: "ID amostra"
+  how: inner
+
+default_target: "Resultado caracterizacao ELISA comercial"
+default_positive_label: Positivo
+
+# Colunas que não devem entrar como feature (identificadores, PII, datas brutas)
+suggested_drop:
+  - "ID amostra"
+  - "Nome completo"
+  - "Inicio de sintoma"
+  - "Data da coleta"
+
+# Colunas candidatas a feature numérica / categórica após limpeza
+feature_hints:
+  numeric:
+    - GAL
+    - Idade
+    - "Dias de sintoma"
+    - "ABS Tempo sensibilização 1h"
+    - "ABS Tempo sensibilização 2h"
+    - "ABS Tempo sensibilização 4h"
+    - "ABS Tempo sensibilização 16h"
+    - "ABS Temperatura amostra 37°C"
+    - "ABS Temperatura amostra T.A."
+  categorical:
+    - GAL
+
+columns:
+  - name: "ID amostra"
+    role: identifier
+    dtype: int
+    description: Identificador único da amostra no estudo (chave de junção entre planilhas).
+    ml_use: exclude
+
+  - name: "Nome completo"
+    role: pii
+    dtype: text
+    description: Nome do participante — dado sensível; não usar em modelos exportados.
+    ml_use: exclude
+
+  - name: GAL
+    role: covariate
+    dtype: int
+    description: Código ou identificador do GAL (grupo/local de coleta), se aplicável ao desenho.
+    ml_use: optional_feature
+
+  - name: Idade
+    role: covariate
+    dtype: int
+    description: Idade do participante em anos.
+    ml_use: feature
+
+  - name: "Inicio de sintoma"
+    role: temporal
+    dtype: date
+    description: Data de início dos sintomas (texto/data na planilha).
+    ml_use: exclude
+
+  - name: "Data da coleta"
+    role: temporal
+    dtype: date
+    description: Data em que a amostra foi coletada.
+    ml_use: exclude
+
+  - name: "Dias de sintoma"
+    role: covariate
+    dtype: int
+    description: Dias entre início dos sintomas e a coleta (derivado no cadastro).
+    ml_use: feature
+
+  - name: "Resultado caracterizacao ELISA comercial"
+    role: target
+    dtype: category
+    description: >
+      Resultado de referência do ELISA comercial (ex.: Positivo / Negativo).
+      Use como variável-alvo para classificação binária.
+    ml_use: target
+
+  - name: "ABS Tempo sensibilização 1h"
+    role: assay_readout
+    dtype: float
+    description: Absorbância (OD) na condição de sensibilização de 1 hora.
+    ml_use: feature
+    notes: Muitos valores ausentes em subconjuntos do ensaio — considere imputação ou exclusão.
+
+  - name: "ABS Tempo sensibilização 2h"
+    role: assay_readout
+    dtype: float
+    description: Absorbância na sensibilização de 2 horas.
+    ml_use: feature
+
+  - name: "ABS Tempo sensibilização 4h"
+    role: assay_readout
+    dtype: float
+    description: Absorbância na sensibilização de 4 horas.
+    ml_use: feature
+
+  - name: "ABS Tempo sensibilização 16h"
+    role: assay_readout
+    dtype: float
+    description: Absorbância na sensibilização de 16 horas.
+    ml_use: feature
+
+  - name: "ABS Temperatura amostra 37°C"
+    role: assay_readout
+    dtype: float
+    description: Absorbância com amostra incubada a 37°C.
+    ml_use: feature
+
+  - name: "ABS Temperatura amostra T.A."
+    role: assay_readout
+    dtype: float
+    description: Absorbância com amostra em temperatura ambiente (T.A.).
+    ml_use: feature

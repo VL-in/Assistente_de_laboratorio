@@ -22,6 +22,7 @@ Assistente_de_lab/
 │   ├── projects_loader.py      # Inventário: um subdiretório de 1º nível = projeto
 │   ├── qwen35_inference.py     # Parâmetros Qwen3.5 / strip de thinking
 │   ├── olap/                   # DuckDB: ingestão, NL→SQL, catálogo
+│   ├── ml/                     # ML tradicional: FLAML, catálogo de colunas, .pkl
 │   ├── rag/                    # Extração, chunking, índice txtai (upsert em lotes)
 │   └── requirements.txt
 ```
@@ -85,6 +86,18 @@ docker compose up -d --build
 3. **Documentos** — **Atualizar base agora** (primeira vez ou após mudanças nos arquivos).
 4. **Desenvolvimento → Busca semântica** — valide recuperação de trechos.
 5. **Conversa** — envie uma mensagem; documentos e planilhas entram automaticamente quando disponíveis.
+6. **ML tradicional** — carregue o projeto 253 (Dengue), revise o dicionário de colunas, treine com FLAML, salve `.pkl` e teste predição em CSV/Excel novo.
+
+### ML tradicional (aba dedicada)
+
+Dataset padrão: `{PROJETOS}/253 - ELISA indireto Dengue/results/` (`amostras_dengue.xlsx` + `Compilado_resultado_otimizacao.xlsx`).
+
+| Variável | Descrição |
+|----------|-----------|
+| `ASSISTENTE_ML_DIR` | Onde salvar modelos `.pkl` (Docker: `/data/ml`) |
+| `ASSISTENTE_ML_DENGUE_RESULTS` | Caminho explícito para a pasta `results/` (opcional) |
+
+O catálogo de colunas (descrições e colunas sugeridas para remover) fica em `apps/streamlit/ml/catalogs/dengue_elisa_253.yaml` — edite conforme o protocolo evoluir.
 
 ---
 
@@ -156,7 +169,8 @@ Implementação no código: `apps/streamlit/qwen35_inference.py`.
 |---------|-----|
 | `/data/projetos` | Bind do host: documentos dos projetos (**somente leitura**) |
 | `/data/txtai` | Volume nomeado: índice vetorial RAG (persiste entre reinícios) |
-| `/data/duckdb` | Volume nomeado: OLAP (fases futuras) |
+| `/data/duckdb` | Volume nomeado: OLAP |
+| `/data/ml` | Volume nomeado: modelos ML (`.pkl`) |
 | `/data/sqlite` | Volume nomeado: metadados (fases futuras) |
 
 ### Saúde do contêiner (HEALTHCHECK)

@@ -12,6 +12,7 @@ Abas da UI (usuário final)
 --------------------------
 0. Conversa — chat com o agente (documentos e planilhas usados automaticamente).
 1. Documentos — escanear pastas, inventário e atualização da base de conhecimento.
+2. ML tradicional — AutoML (FLAML), dicionário de colunas, exportação .pkl e predição.
 
 Aba Desenvolvimento (sub-abas internas)
 ---------------------------------------
@@ -91,6 +92,7 @@ from rag import (
     txtai_data_root,
     txtai_index_path,
 )
+from ml.ui import render_ml_tab
 
 # ── System prompt ────────────────────────────────────────────────────────────
 # Instrução base enviada ao LLM em todas as conversas. Quando o RAG está ativo,
@@ -1369,7 +1371,7 @@ root_ok, root_msg = validate_projetos_root(root)
 st.title("Assistente Lab")
 st.caption("Assistente para documentos e dados do laboratório — uso local e offline.")
 
-tabs = st.tabs(["Conversa", "Documentos", "Desenvolvimento"])
+tabs = st.tabs(["Conversa", "Documentos", "ML tradicional", "Desenvolvimento"])
 
 scans: list[ProjectScan] | None = st.session_state.get("last_scan")
 
@@ -1378,4 +1380,6 @@ with tabs[0]:
 with tabs[1]:
     _tab_documentos(root, root_ok, root_msg)
 with tabs[2]:
+    render_ml_tab()
+with tabs[3]:
     _tab_desenvolvimento(root, root_ok, root_msg, scans)

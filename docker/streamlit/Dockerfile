@@ -3,6 +3,11 @@
 
 FROM python:3.12-slim-bookworm
 
+# LightGBM (dependência do flaml[automl]) precisa de OpenMP em runtime.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN useradd --create-home --shell /bin/bash --uid 10001 appuser
 
 WORKDIR /app
@@ -10,12 +15,13 @@ WORKDIR /app
 COPY apps/streamlit/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r /app/requirements.txt \
-    && python -c "import duckdb; print('duckdb', duckdb.__version__)"
+    && python -c "import duckdb; print('duckdb', duckdb.__version__)" \
+    && python -c "from flaml import AutoML; print('flaml', AutoML.__name__)"
 
 COPY apps/streamlit/ /app/
 
 # Pastas persistentes (volumes nomeados ou bind no compose)
-RUN mkdir -p /data/projetos /data/txtai /data/duckdb /data/sqlite \
+RUN mkdir -p /data/projetos /data/txtai /data/duckdb /data/ml /data/sqlite \
     && chown -R appuser:appuser /app /data
 
 USER appuser
