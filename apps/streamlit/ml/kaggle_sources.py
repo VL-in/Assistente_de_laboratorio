@@ -10,7 +10,8 @@ from pathlib import Path
 import pandas as pd
 
 KAGGLE_ABRANK_HANDLE = "aurlienplissier/abrank"
-DEFAULT_ABRANK_SPLIT = "Benchmarks/train_regression.csv"
+DEFAULT_ABRANK_SPLIT = "AbRank_dataset.csv"
+ABRANK_BENCHMARK_REGRESSION_SPLIT = "Benchmarks/train_regression.csv"
 
 
 def kaggle_cache_root() -> Path:

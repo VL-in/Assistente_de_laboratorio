@@ -40,13 +40,19 @@ def load_dataset_from_catalog(
         )
     if not catalog.kaggle_split_file:
         raise ValueError(f"Catálogo `{catalog.dataset_id}` sem `kaggle_split_file`.")
+    split_file = catalog.kaggle_split_file
     df = load_kaggle_csv(
         catalog.kaggle_handle,
-        catalog.kaggle_split_file,
+        split_file,
         separator=catalog.csv_separator,
         max_rows=max_rows,
         force_download=force_download,
     )
+    if len(df.columns) == 1 and "\t" in str(df.columns[0]):
+        raise ValueError(
+            f"O arquivo `{split_file}` parece TSV mas foi lido com separador incorreto. "
+            f"Confira `csv_separator` no catálogo (AbRank completo usa tabulação)."
+        )
     return df, catalog
 
 

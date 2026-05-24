@@ -18,6 +18,7 @@ from ml.datasets import normalize_column_name
 from ml.dictionary import load_dataset_catalog
 from ml.paths import chat_ml_model_available, chat_ml_model_path
 from ml.predict import predict_from_bundle
+from ml.sequence_embeddings import extract_sequences_from_text, sequence_column_names
 from ml.training import ModelBundle, load_model_bundle
 from qwen35_inference import (
     PROFILE_CHAT_ROUTER,
@@ -43,7 +44,8 @@ Regras:
 - Valores numéricos como número JSON; categorias como string.
 - Se o usuário não forneceu dados suficientes para preencher as features obrigatórias, retorne ``rows``: [] e ``error`` explicando o que falta.
 - Não invente valores que o usuário não mencionou; campos ausentes podem ser omitidos (o pipeline imputa medianas).
-- Não inclua a coluna-alvo (target) nas linhas."""
+- Não inclua a coluna-alvo (target) nas linhas.
+- Colunas de sequência (Ab_heavy_chain_seq, Ab_light_chain_seq, Ag_seq) podem ser strings longas com aminoácidos (A,C,D,E,...)."""
 
 _EXTRACT_USER_TEMPLATE = """Esquema de features do modelo (colunas obrigatórias para inferência):
 {schema}
@@ -106,12 +108,31 @@ def _build_feature_schema_text(bundle: ModelBundle) -> str:
         lines.append("")
 
     lines.append("#### Colunas que ESTE arquivo .pkl usa na inferência (obrigatórias no JSON)")
-    for col in bundle.feature_columns:
+    seq_pca_cols = {c for c in bundle.feature_columns if c.startswith("seq_pca_")}
+    tabular_cols = [c for c in bundle.feature_columns if c not in seq_pca_cols]
+    for col in tabular_cols:
         desc = catalog.description_for(col) if catalog else ""
         line = f"- `{col}`"
         if desc:
             line += f": {desc}"
         lines.append(line)
+
+    transformer = getattr(bundle, "sequence_transformer", None)
+    if transformer is not None:
+        lines.append("")
+        lines.append("#### Sequências (pré-processadas com ESM-2 + PCA antes da predição)")
+        for col in transformer.config.sequence_columns:
+            desc = catalog.description_for(col) if catalog else ""
+            line = f"- `{col}` (texto aminoácido; gera {len(transformer.pca_columns_)} colunas ``seq_pca_*``)"
+            if desc:
+                line += f": {desc}"
+            lines.append(line)
+        lines.append(
+            "_Informe pelo menos uma sequência quando o modelo foi treinado com embeddings._"
+        )
+    elif seq_pca_cols:
+        for col in sorted(seq_pca_cols):
+            lines.append(f"- `{col}` (derivada de sequência no treino)")
 
     if catalog is not None:
         missing_in_model = [
@@ -150,7 +171,11 @@ def _coerce_feature_value(raw: str, column: str) -> object:
 
 
 def _column_name_map(bundle: ModelBundle) -> dict[str, str]:
-    return {normalize_column_name(c): c for c in bundle.feature_columns}
+    cols = list(_tabular_feature_columns(bundle))
+    transformer = getattr(bundle, "sequence_transformer", None)
+    if transformer is not None:
+        cols.extend(list(transformer.config.sequence_columns))
+    return {normalize_column_name(c): c for c in cols}
 
 
 def extract_features_rule_based(message: str, bundle: ModelBundle) -> list[dict]:
@@ -188,7 +213,7 @@ def extract_features_rule_based(message: str, bundle: ModelBundle) -> list[dict]
         canonical = col_map["agtype"]
         row[canonical] = agtype_match.group("val")
 
-    for col in bundle.feature_columns:
+    for col in _tabular_feature_columns(bundle):
         if col in row:
             continue
         escaped = re.escape(col)
@@ -277,11 +302,38 @@ def extract_prediction_rows(
     return rows, raw, None
 
 
+def _tabular_feature_columns(bundle: ModelBundle) -> list[str]:
+    return [c for c in bundle.feature_columns if not c.startswith("seq_pca_")]
+
+
+def _merge_sequence_fields(rows: list[dict], message: str) -> list[dict]:
+    """Combina sequências extraídas da mensagem (regex/FASTA) com linhas do LLM/regras."""
+    seqs = extract_sequences_from_text(message)
+    if not rows and seqs:
+        return [dict(seqs)]
+    if not seqs:
+        return rows
+    merged: list[dict] = []
+    for row in rows:
+        item = dict(row)
+        for col, seq in seqs.items():
+            existing = str(item.get(col, "") or "").strip()
+            if len(existing) < 10:
+                item[col] = seq
+        merged.append(item)
+    return merged
+
+
 def _rows_to_dataframe(rows: list[dict], bundle: ModelBundle) -> pd.DataFrame:
     df = pd.DataFrame(rows)
-    for col in bundle.feature_columns:
+    for col in _tabular_feature_columns(bundle):
         if col not in df.columns:
             df[col] = pd.NA
+    transformer = getattr(bundle, "sequence_transformer", None)
+    if transformer is not None:
+        for col in transformer.config.sequence_columns:
+            if col not in df.columns:
+                df[col] = pd.NA
     return df
 
 
@@ -371,22 +423,40 @@ def run_chat_ml_inference(
             rows = rule_rows
             extract_err = None
             raw = raw or json.dumps({"rows": rows, "source": "rule_based"}, ensure_ascii=False)
-    if extract_err:
-        present = rows[0] if rows else {}
-        missing = [c for c in loaded.feature_columns if c not in present]
-        hint = ", ".join(f"`{c}`" for c in missing[:8])
+    rows = _merge_sequence_fields(rows, message)
+    if not rows:
+        err = extract_err or "Nenhuma feature ou sequência foi extraída da mensagem."
         return MlInferResult(
             ok=False,
             model_path=str(path),
-            error=extract_err,
+            error=err,
             raw_llm_response=raw,
             context_for_llm=(
                 "### Predição ML (dados insuficientes)\n"
-                f"{extract_err}\n\n"
-                f"Features ainda não identificadas na mensagem: {hint or '(todas)'}. "
-                "Peça ao usuário os valores com nomes exatos das colunas, sem inventar números."
+                f"{err}\n\nInforme features tabulares e/ou sequências de aminoácidos."
             ),
         )
+
+    transformer = getattr(loaded, "sequence_transformer", None)
+    if transformer is not None:
+        from ml.sequence_embeddings import clean_protein_sequence
+
+        has_seq = any(
+            clean_protein_sequence(rows[0].get(col))
+            for col in transformer.config.sequence_columns
+        )
+        if not has_seq:
+            err = (
+                "Este modelo usa embeddings ESM-2. Informe pelo menos uma sequência: "
+                "Ab_heavy_chain_seq, Ab_light_chain_seq ou Ag_seq."
+            )
+            return MlInferResult(
+                ok=False,
+                model_path=str(path),
+                error=err,
+                raw_llm_response=raw,
+                context_for_llm=f"### Predição ML (dados insuficientes)\n{err}",
+            )
 
     try:
         input_df = _rows_to_dataframe(rows, loaded)

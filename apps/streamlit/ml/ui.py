@@ -16,7 +16,11 @@ from ml.datasets import (
     prepare_feature_matrix,
 )
 from ml.dictionary import DatasetCatalog, load_dataset_catalog
-from ml.kaggle_sources import KAGGLE_ABRANK_HANDLE, kaggle_cache_root
+from ml.kaggle_sources import (
+    ABRANK_BENCHMARK_REGRESSION_SPLIT,
+    KAGGLE_ABRANK_HANDLE,
+    kaggle_cache_root,
+)
 from ml.paths import ensure_ml_models_root
 from ml.predict import (
     DEFAULT_MERGE_KEY,
@@ -25,6 +29,7 @@ from ml.predict import (
     read_prediction_table,
     validate_prediction_columns,
 )
+from ml.sequence_embeddings import esm_available, sequence_column_names
 from ml.training import (
     EstimatorSummary,
     FlamlTrainConfig,
@@ -60,8 +65,13 @@ def _load_catalog_dataset(
     *,
     max_rows: int | None,
     force_download: bool,
+    kaggle_split_file: str | None = None,
 ) -> None:
     catalog = load_dataset_catalog(catalog_id)
+    if kaggle_split_file:
+        from dataclasses import replace
+
+        catalog = replace(catalog, kaggle_split_file=kaggle_split_file)
     with st.spinner("Baixando/carregando dataset…"):
         df, catalog = load_dataset_from_catalog(
             catalog,
@@ -71,6 +81,7 @@ def _load_catalog_dataset(
     st.session_state[SESSION_DF] = df
     st.session_state[SESSION_CATALOG] = catalog
     st.session_state[SESSION_CATALOG_ID] = catalog_id
+    st.session_state["ml_kaggle_split_file"] = catalog.kaggle_split_file
     if catalog.is_kaggle:
         st.session_state["ml_kaggle_handle"] = catalog.kaggle_handle
 
@@ -91,6 +102,27 @@ def _section_dados() -> None:
             "ou use `~/.kaggle/kaggle.json`. No Docker, monte o token ou passe a variável no Compose."
         )
 
+    split_options = {
+        "AbRank_dataset.csv (completo — sequências e clusters)": catalog.kaggle_split_file,
+        "Benchmarks/train_regression.csv (benchmark — 16 colunas, sem sequências)": ABRANK_BENCHMARK_REGRESSION_SPLIT,
+    }
+    split_labels = list(split_options.keys())
+    default_split = st.session_state.get("ml_kaggle_split_file", catalog.kaggle_split_file)
+    split_index = 0
+    for i, label in enumerate(split_labels):
+        if split_options[label] == default_split:
+            split_index = i
+            break
+    split_label = st.selectbox(
+        "Arquivo Kaggle",
+        options=split_labels,
+        index=split_index,
+        key="ml_kaggle_split_select",
+        help="O dataset completo no Kaggle é o TSV ``AbRank_dataset.csv``. "
+        "O split de benchmark de regressão omite sequências e vários clusters.",
+    )
+    selected_split = split_options[split_label]
+
     c1, c2, c3 = st.columns([1, 1, 1])
     max_rows = c1.number_input(
         "Máx. linhas (0 = todas)",
@@ -98,7 +130,7 @@ def _section_dados() -> None:
         value=15000,
         step=1000,
         key="ml_max_rows",
-        help="AbRank tem centenas de milhares de linhas; use amostra para treinar mais rápido.",
+        help="AbRank completo tem centenas de milhares de linhas; use amostra para treinar mais rápido.",
     )
     force_dl = c2.checkbox("Forçar novo download", value=False, key="ml_force_kaggle_dl")
     with c3:
@@ -109,8 +141,12 @@ def _section_dados() -> None:
                     catalog_id,
                     max_rows=int(max_rows),
                     force_download=force_dl,
+                    kaggle_split_file=selected_split,
                 )
-                st.success(f"{len(st.session_state[SESSION_DF])} linha(s) carregada(s).")
+                df_loaded = st.session_state[SESSION_DF]
+                st.success(
+                    f"{len(df_loaded)} linha(s) · {len(df_loaded.columns)} coluna(s) · `{selected_split}`"
+                )
             except Exception as exc:
                 st.error(str(exc))
 
@@ -148,8 +184,17 @@ def _section_dados() -> None:
         st.dataframe(df.head(20), use_container_width=True, hide_index=True)
 
     with st.expander("Dicionário de colunas", expanded=True):
+        loaded_file = st.session_state.get("ml_kaggle_split_file", catalog.kaggle_split_file)
+        st.caption(f"Arquivo carregado: `{loaded_file}` · {len(df.columns)} colunas no DataFrame.")
         dict_df = pd.DataFrame(catalog.column_dict_rows())
         dict_df["presente_no_dataset"] = dict_df["coluna"].isin(df.columns)
+        n_present = int(dict_df["presente_no_dataset"].sum())
+        n_total = len(dict_df)
+        st.caption(f"Catálogo: {n_present}/{n_total} colunas documentadas presentes no arquivo atual.")
+        extra_cols = [c for c in df.columns if c not in set(dict_df["coluna"])]
+        if extra_cols:
+            st.caption(f"Colunas só no arquivo (não no catálogo): {', '.join(extra_cols[:12])}"
+                       + ("…" if len(extra_cols) > 12 else ""))
         st.dataframe(dict_df, use_container_width=True, hide_index=True)
 
     suggested = [c for c in catalog.suggested_drop if c in df.columns]
@@ -298,12 +343,34 @@ def _section_treino() -> None:
 
     default_features = default_feature_columns(df, catalog)
     catalog_feats = [c for c in catalog.input_feature_column_names() if c in df.columns]
+    seq_cols_present = [c for c in sequence_column_names() if c in df.columns]
     st.caption(
-        f"O catálogo AbRank define **{len(catalog_feats)}** colunas utilizáveis "
-        f"(clusters, IC50, Kd, escape, métodos de estrutura, etc.). "
-        f"Sugestão automática: **{len(default_features)}** colunas com dados. "
-        "Sequências de aminoácidos e IDs não entram no ML tabular."
+        f"O catálogo AbRank define **{len(catalog_feats)}** colunas tabulares utilizáveis. "
+        f"Sugestão automática: **{len(default_features)}** colunas com dados."
     )
+    use_sequence_embeddings = st.checkbox(
+        "Incluir embeddings ESM-2 (8M) das sequências + PCA",
+        value=bool(seq_cols_present),
+        disabled=not seq_cols_present,
+        key="ml_use_esm",
+        help=(
+            "Usa facebook/esm2_t6_8M_UR50D nas colunas "
+            + ", ".join(sequence_column_names())
+            + " e compacta com PCA (~95% variância)."
+        ),
+    )
+    if seq_cols_present and use_sequence_embeddings:
+        n_rows = len(df)
+        n_seq_cols = len(seq_cols_present)
+        est_batches = n_seq_cols * ((n_rows + 15) // 16)
+        st.caption(
+            f"Sequências detectadas: {', '.join(seq_cols_present)}. "
+            f"Com **{n_rows:,}** linhas, espere **vários minutos** só na fase ESM-2 "
+            f"(~{est_batches:,} lotes de embedding + PCA); depois o FLAML usa o tempo "
+            f"máximo configurado abaixo. A barra de progresso atualiza a cada lote."
+        )
+    elif not seq_cols_present:
+        st.caption("Dataset sem colunas de sequência — embeddings ESM desativados.")
     feature_columns = st.multiselect(
         "Features",
         options=sorted(df.columns),
@@ -352,6 +419,12 @@ def _section_treino() -> None:
             st.error(str(exc))
             return
 
+        if use_sequence_embeddings:
+            ok_esm, esm_msg = esm_available()
+            if not ok_esm:
+                st.error(esm_msg)
+                return
+
         config = FlamlTrainConfig(
             task=task,
             time_budget=int(time_budget),
@@ -362,8 +435,25 @@ def _section_treino() -> None:
             seed=int(seed),
             test_size=float(test_size),
         )
-        with st.spinner("FLAML buscando o melhor modelo…"):
-            try:
+        train_status = st.status(
+            "Treino em andamento…",
+            expanded=True,
+            state="running",
+        )
+        try:
+            with train_status:
+                train_bar = st.progress(0.0, text="Iniciando…")
+                train_detail = st.empty()
+
+                def _train_progress(message: str, fraction: float | None) -> None:
+                    train_status.update(label=message, state="running")
+                    train_detail.caption(message)
+                    if fraction is not None:
+                        train_bar.progress(
+                            min(1.0, max(0.0, fraction)),
+                            text=message,
+                        )
+
                 bundle, report = train_flaml_model(
                     df,
                     feature_columns=feature_columns,
@@ -371,10 +461,15 @@ def _section_treino() -> None:
                     config=config,
                     dataset_id=catalog.dataset_id,
                     catalog_id=st.session_state.get(SESSION_CATALOG_ID, catalog.dataset_id),
+                    use_sequence_embeddings=use_sequence_embeddings,
+                    progress=_train_progress,
                 )
-            except Exception as exc:
-                st.error(f"Falha no treino: {exc}")
-                return
+                train_bar.progress(1.0, text="Concluído")
+        except Exception as exc:
+            train_status.update(label="Falha no treino", state="error")
+            st.error(f"Falha no treino: {exc}")
+            return
+        train_status.update(label="Treino concluído", state="complete")
 
         st.session_state[SESSION_BUNDLE] = bundle
         st.session_state[SESSION_REPORT] = report
@@ -449,6 +544,10 @@ def _section_predicao() -> None:
         return
 
     st.caption(f"Features esperadas: {', '.join(bundle.feature_columns)}")
+    if getattr(bundle, "sequence_transformer", None) is not None:
+        st.caption(
+            "Modelo com ESM-2: inclua colunas de sequência no arquivo ou elas serão imputadas pela média do treino."
+        )
     upload = st.file_uploader("CSV ou Excel", type=["csv", "xlsx", "xlsm"], key="ml_predict_upload")
     enrich = st.checkbox(
         "Mesclar metadados do dataset carregado (pela chave do catálogo)",

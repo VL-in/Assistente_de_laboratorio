@@ -8,7 +8,9 @@ import json
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
+
+TrainProgressFn = Callable[[str, float | None], None]
 
 import joblib
 import numpy as np
@@ -29,6 +31,12 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import LabelEncoder, OneHotEncoder
 
 from ml.datasets import coerce_abs_columns, prepare_feature_matrix
+from ml.sequence_embeddings import (
+    SequenceEmbeddingConfig,
+    SequenceEmbeddingTransformer,
+    esm_available,
+    sequence_column_names,
+)
 
 # Estimadores disponíveis sem extras pip (lightgbm/xgboost/catboost).
 MINIMAL_ESTIMATOR_LIST = ("rf", "extra_tree", "lrl1")
@@ -127,13 +135,24 @@ class ModelBundle:
     train_report: dict[str, Any]
     trained_at: str
     catalog_id: str = "abrank_kaggle"
+    sequence_transformer: SequenceEmbeddingTransformer | None = None
+
+    def _prepare_feature_frame(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Aplica embedding+PCA de sequências quando o bundle foi treinado com ESM-2."""
+        work = coerce_abs_columns(df.copy())
+        if self.sequence_transformer is None:
+            return work
+        for col in self.sequence_transformer.config.sequence_columns:
+            if col not in work.columns:
+                work[col] = pd.NA
+        return self.sequence_transformer.transform(work)
 
     def predict_labels(self, df: pd.DataFrame) -> np.ndarray:
-        x = coerce_abs_columns(df)
-        missing = [c for c in self.feature_columns if c not in x.columns]
+        work = self._prepare_feature_frame(df)
+        missing = [c for c in self.feature_columns if c not in work.columns]
         if missing:
             raise ValueError(f"Colunas ausentes para predição: {missing}")
-        preds = self.pipeline.predict(x[self.feature_columns])
+        preds = self.pipeline.predict(work[self.feature_columns])
         if self.task == "regression" or self.label_encoder is None:
             return np.asarray(preds)
         return self.label_encoder.inverse_transform(preds)
@@ -141,12 +160,12 @@ class ModelBundle:
     def predict_proba(self, df: pd.DataFrame) -> pd.DataFrame:
         if self.task == "regression":
             raise AttributeError("Predição de probabilidade não se aplica a regressão.")
-        x = coerce_abs_columns(df)
+        work = self._prepare_feature_frame(df)
         if self.label_encoder is None:
             raise AttributeError("Modelo sem codificador de classes.")
         if not hasattr(self.pipeline, "predict_proba"):
             raise AttributeError("O estimador treinado não expõe predict_proba.")
-        probs = self.pipeline.predict_proba(x[self.feature_columns])
+        probs = self.pipeline.predict_proba(work[self.feature_columns])
         return pd.DataFrame(probs, columns=list(self.label_encoder.classes_))
 
 
@@ -277,23 +296,44 @@ def train_flaml_model(
     config: FlamlTrainConfig,
     dataset_id: str = "abrank_kaggle",
     catalog_id: str = "abrank_kaggle",
+    use_sequence_embeddings: bool = False,
+    embedding_config: SequenceEmbeddingConfig | None = None,
+    progress: TrainProgressFn | None = None,
 ) -> tuple[ModelBundle, TrainReport]:
     """Treina um modelo FLAML (classificação ou regressão conforme ``config.task``)."""
     ok, msg = flaml_available()
     if not ok:
         raise RuntimeError(msg)
 
+    if progress is not None:
+        progress("Preparando dados para o treino…", 0.03)
+
     from flaml import AutoML
 
     task = config.task if config.task in ("classification", "regression") else "classification"
     metric = config.resolved_metric()
 
+    seq_cols = set(sequence_column_names())
+    tabular_features = [c for c in feature_columns if c not in seq_cols]
+    sequence_transformer: SequenceEmbeddingTransformer | None = None
+
     x, y_raw = prepare_feature_matrix(
         df,
-        feature_columns=feature_columns,
+        feature_columns=tabular_features,
         target_column=target_column,
         regression_target=(task == "regression"),
     )
+
+    if use_sequence_embeddings:
+        present_seq = [c for c in sequence_column_names() if c in df.columns]
+        if not present_seq:
+            raise ValueError(
+                "Embeddings de sequência solicitados, mas o dataset não contém "
+                f"{list(sequence_column_names())}."
+            )
+        ok_esm, esm_msg = esm_available()
+        if not ok_esm:
+            raise RuntimeError(esm_msg)
 
     label_encoder: LabelEncoder | None = None
     if task == "regression":
@@ -315,11 +355,42 @@ def train_flaml_model(
         stratify=stratify,
     )
 
+    final_feature_columns = list(tabular_features)
+
+    if use_sequence_embeddings:
+        if progress is not None:
+            progress(
+                "ESM-2: carregando modelo (primeira execução pode baixar ~30 MB)…",
+                0.02,
+            )
+        sequence_transformer = SequenceEmbeddingTransformer(embedding_config)
+        train_df = df.loc[x_train.index]
+        sequence_transformer.fit(train_df, progress=progress)
+        pca_train = sequence_transformer.training_pca_frame()
+        sequence_transformer.clear_training_cache()
+        pca_test = sequence_transformer.transform_pca_only(
+            df.loc[x_test.index],
+            progress=progress,
+        )
+        if progress is not None:
+            progress("ESM-2: embeddings concluídos. Iniciando FLAML…", 0.62)
+        x_train = pd.concat([x_train.reset_index(drop=True), pca_train.reset_index(drop=True)], axis=1)
+        x_test = pd.concat([x_test.reset_index(drop=True), pca_test.reset_index(drop=True)], axis=1)
+        final_feature_columns = tabular_features + sequence_transformer.pca_columns_
+
+    if progress is not None:
+        progress(
+            f"FLAML: buscando melhor modelo (até {config.time_budget}s, métrica={metric})…",
+            0.68,
+        )
     preprocessor = _build_preprocessor(x_train)
+    x_train_pp = preprocessor.fit_transform(x_train)
+    x_test_pp = preprocessor.transform(x_test)
+
     automl = AutoML()
 
     fit_kwargs: dict[str, Any] = {
-        "X_train": x_train,
+        "X_train": x_train_pp,
         "y_train": y_train,
         "task": task,
         "metric": metric,
@@ -336,6 +407,9 @@ def train_flaml_model(
     fit_kwargs["keep_search_state"] = True
 
     automl.fit(**fit_kwargs)
+
+    if progress is not None:
+        progress("FLAML: montando pipeline final e avaliando no teste…", 0.92)
 
     best_estimator = str(automl.best_estimator)
     estimator_summaries = build_estimator_summaries(
@@ -379,7 +453,7 @@ def train_flaml_model(
             n_total=len(x),
             n_train=len(x_train),
             n_test=len(x_test),
-            feature_columns=list(feature_columns),
+            feature_columns=list(final_feature_columns),
             target_column=target_column,
             estimator_summaries=estimator_summaries,
             best_cv_score=best_cv_score,
@@ -407,16 +481,19 @@ def train_flaml_model(
             n_total=len(x),
             n_train=len(x_train),
             n_test=len(x_test),
-            feature_columns=list(feature_columns),
+            feature_columns=list(final_feature_columns),
             target_column=target_column,
             estimator_summaries=estimator_summaries,
             best_cv_score=best_cv_score,
         )
 
+    if sequence_transformer is not None:
+        sequence_transformer.clear_training_cache()
+
     bundle = ModelBundle(
         pipeline=pipeline,
         label_encoder=label_encoder,
-        feature_columns=list(feature_columns),
+        feature_columns=list(final_feature_columns),
         target_column=target_column,
         dataset_id=dataset_id,
         task=task,
@@ -424,7 +501,10 @@ def train_flaml_model(
         train_report=asdict(report),
         trained_at=datetime.now(timezone.utc).isoformat(),
         catalog_id=catalog_id,
+        sequence_transformer=sequence_transformer,
     )
+    if progress is not None:
+        progress("Treino concluído.", 1.0)
     return bundle, report
 
 
@@ -456,6 +536,8 @@ def load_model_bundle(path: Path) -> ModelBundle:
         bundle.task = "classification"
     if not getattr(bundle, "catalog_id", None):
         bundle.catalog_id = bundle.dataset_id
+    if not hasattr(bundle, "sequence_transformer"):
+        bundle.sequence_transformer = None
     return bundle
 
 
@@ -467,5 +549,16 @@ def bundle_metadata_json(bundle: ModelBundle) -> str:
         "feature_columns": bundle.feature_columns,
         "trained_at": bundle.trained_at,
         "train_report": bundle.train_report,
+        "sequence_embeddings": bundle.sequence_transformer is not None,
+        "sequence_columns": (
+            list(bundle.sequence_transformer.config.sequence_columns)
+            if bundle.sequence_transformer is not None
+            else []
+        ),
+        "seq_pca_columns": (
+            list(bundle.sequence_transformer.pca_columns_)
+            if bundle.sequence_transformer is not None
+            else []
+        ),
     }
     return json.dumps(meta, ensure_ascii=False, indent=2)
