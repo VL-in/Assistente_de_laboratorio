@@ -14,9 +14,17 @@ WORKDIR /app
 
 COPY apps/streamlit/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu \
     && pip install --no-cache-dir -r /app/requirements.txt \
     && python -c "import duckdb; print('duckdb', duckdb.__version__)" \
     && python -c "from flaml import AutoML; print('flaml', AutoML.__name__)"
+
+ENV HF_HOME=/data/ml/huggingface \
+    TRANSFORMERS_CACHE=/data/ml/huggingface
+
+# Pré-baixa ESM-2 8M para o cache (volume /data/ml em runtime).
+RUN mkdir -p /data/ml/huggingface \
+    && python -c "from transformers import AutoModel, AutoTokenizer; m='facebook/esm2_t6_8M_UR50D'; AutoTokenizer.from_pretrained(m); AutoModel.from_pretrained(m); print('esm2', m, 'ok')"
 
 COPY apps/streamlit/ /app/
 

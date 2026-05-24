@@ -1152,7 +1152,10 @@ def _tab_chat() -> None:
             model_path = chat_ml_model_path()
             mtime = model_path.stat().st_mtime if model_path.is_file() else 0.0
             bundle = _ml_bundle_cached(str(model_path), mtime)
-            with st.spinner("Executando predição ML…"):
+            with st.spinner(
+                "Executando predição ML"
+                + (" (ESM-2 + modelo)…" if getattr(bundle, "sequence_transformer", None) else "…")
+            ):
                 ml_result = run_chat_ml_inference(
                     prompt,
                     history=history_before,

@@ -5,7 +5,9 @@
 dataset_id: abrank_kaggle
 display_name: "AbRank (Kaggle) — afinidade Ab–Ag"
 kaggle_handle: aurlienplissier/abrank
-kaggle_split_file: Benchmarks/train_regression.csv
+# Dataset completo no Kaggle (TSV, ~28 colunas, inclui sequências e clusters).
+# O split ``Benchmarks/train_regression.csv`` é um subconjunto (~16 colunas, sem sequências).
+kaggle_split_file: AbRank_dataset.csv
 csv_separator: "\t"
 
 ml_task: regression
@@ -17,8 +19,6 @@ suggested_drop:
   - Ab_name
   - Ag_name
   - Ag_name_details
-  - AbAg_name
-  - AbAgID
   - Source
   - Aff_op
   - Ab_PDB_ID
@@ -44,7 +44,6 @@ feature_hints:
     - Ag25_cluster
     - Ag50_cluster
   categorical:
-    - Agtype
     - Ab_structure_method
     - Ag_structure_method
     - bound_AbAg_structure_method
@@ -206,24 +205,6 @@ columns:
     dtype: int
     description: Cluster de sequência do antígeno (50% identidade).
     ml_use: feature
-
-  - name: Agtype
-    role: covariate
-    dtype: category
-    description: Família ou tipo de antígeno (ex. SARS-CoV-2, HIV, HER2); pode não existir em todos os splits.
-    ml_use: optional_feature
-
-  - name: AbAg_name
-    role: identifier
-    dtype: text
-    description: Nome composto do complexo anticorpo–antígeno.
-    ml_use: identifier
-
-  - name: AbAgID
-    role: identifier
-    dtype: text
-    description: Identificador interno do par Ab–Ag.
-    ml_use: identifier
 
   - name: log_Aff
     role: target

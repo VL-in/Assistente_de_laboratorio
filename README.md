@@ -95,6 +95,7 @@ Dataset padrão: **[AbRank no Kaggle](https://www.kaggle.com/datasets/aurlienpli
 | Variável | Descrição |
 |----------|-----------|
 | `ASSISTENTE_ML_DIR` | Onde salvar modelos `.pkl` (Docker: `/data/ml`) |
+| `ASSISTENTE_ML_CHAT_MODEL` | Caminho do `.pkl` usado no chat (padrão: `/data/ml/modelo_20260524_224734_04768.pkl`) |
 | `KAGGLE_API_TOKEN` | Token da API Kaggle (obrigatório fora do Kaggle Notebooks) |
 | `KAGGLEHUB_CACHE` | Cache dos downloads (Docker: `/data/ml/kagglehub`) |
 Catálogo YAML em `apps/streamlit/ml/catalogs/abrank_kaggle.yaml`.
