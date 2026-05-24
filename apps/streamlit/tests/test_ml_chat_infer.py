@@ -18,6 +18,7 @@ from ml.chat_infer import (  # noqa: E402
     MlInferResult,
     _parse_extract_json,
     _rows_to_dataframe,
+    extract_features_rule_based,
     run_chat_ml_inference,
 )
 from ml.training import ModelBundle, save_model_bundle  # noqa: E402
@@ -37,6 +38,27 @@ class ParseExtractJsonTests(unittest.TestCase):
         rows, err = _parse_extract_json(raw)
         self.assertEqual(err, "faltam features")
         self.assertEqual(rows, [])
+
+
+class RuleBasedExtractTests(unittest.TestCase):
+    def test_user_style_message(self) -> None:
+        bundle = RunChatMlInferenceTests()._minimal_bundle()
+        bundle.feature_columns = [
+            "Agtype",
+            "escape",
+            "IC50 [ug/mL]",
+            "Affinity_Kd [nM]",
+        ]
+        msg = (
+            "Faça a predição de log_Aff com Agtype SARS-CoV-2 com os parâmetros: "
+            "escape = 0, IC50 [ug/mL] = 0.5 e Affinity_Kd [nM] = 12"
+        )
+        rows = extract_features_rule_based(msg, bundle)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["Agtype"], "SARS-CoV-2")
+        self.assertEqual(rows[0]["escape"], 0)
+        self.assertAlmostEqual(rows[0]["IC50 [ug/mL]"], 0.5)
+        self.assertEqual(rows[0]["Affinity_Kd [nM]"], 12)
 
 
 class RunChatMlInferenceTests(unittest.TestCase):

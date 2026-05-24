@@ -11,9 +11,13 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from qwen35_inference import (  # noqa: E402
+    DEFAULT_CHAT_ML_MAX_TOKENS,
     PROFILE_CHAT_INSTRUCT,
     PROFILE_OLAP_SQL,
     build_completion_kwargs,
+    chat_max_tokens,
+    effective_chat_limits,
+    format_history_snippet,
     is_qwen35_model,
     select_chat_profile,
     strip_thinking_blocks,
@@ -73,6 +77,30 @@ class StreamAnswerTests(unittest.TestCase):
         ]
         parts = list(iter_stream_answer_text(stream, model_id="qwen3.5-9b-mtp"))
         self.assertEqual("".join(parts), "Resposta.")
+
+
+class ChatLimitsTests(unittest.TestCase):
+    def test_ml_route_caps_tokens(self) -> None:
+        capped, turns = effective_chat_limits(
+            run_ml=True, max_tokens=4096, max_history_turns=8
+        )
+        self.assertLessEqual(capped, DEFAULT_CHAT_ML_MAX_TOKENS)
+        self.assertLessEqual(turns, 2)
+
+    def test_history_snippet_truncates(self) -> None:
+        hist = [{"role": "user", "content": "x" * 500}]
+        snippet = format_history_snippet(hist, max_turns=1, max_chars_per_message=100)
+        self.assertIn("…", snippet)
+        self.assertLessEqual(len(snippet), 120)
+
+    def test_env_override_max_tokens(self) -> None:
+        import os
+
+        os.environ["CHAT_MAX_TOKENS"] = "1024"
+        try:
+            self.assertEqual(chat_max_tokens(ml_route=False), 1024)
+        finally:
+            os.environ.pop("CHAT_MAX_TOKENS", None)
 
 
 class CompletionKwargsTests(unittest.TestCase):

@@ -297,11 +297,19 @@ def _section_treino() -> None:
     )
 
     default_features = default_feature_columns(df, catalog)
+    catalog_feats = [c for c in catalog.input_feature_column_names() if c in df.columns]
+    st.caption(
+        f"O catálogo AbRank define **{len(catalog_feats)}** colunas utilizáveis "
+        f"(clusters, IC50, Kd, escape, métodos de estrutura, etc.). "
+        f"Sugestão automática: **{len(default_features)}** colunas com dados. "
+        "Sequências de aminoácidos e IDs não entram no ML tabular."
+    )
     feature_columns = st.multiselect(
         "Features",
         options=sorted(df.columns),
         default=default_features,
         key="ml_feature_cols",
+        help="Para usar todas as colunas tabulares do AbRank, mantenha a seleção sugerida ou inclua manualmente.",
     )
 
     default_metric = catalog.default_metric or ("r2" if task == "regression" else "f1")
