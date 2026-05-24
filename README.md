@@ -1,6 +1,6 @@
 # Assistente de lab
 
-Aplicação web **MVP offline-first** para apoiar P&D com documentos locais, **RAG** (txtai + embeddings multilíngues), **OLAP** (planejado: DuckDB) e geração via **LM Studio** no host. A UI e o pipeline Python rodam **no Docker**; dados sensíveis e o modelo de linguagem ficam na sua máquina.
+Aplicação web **MVP offline-first** para apoiar P&D com documentos locais, **RAG** (txtai + embeddings multilíngues), **OLAP** (DuckDB), **ML tradicional** (FLAML + Kaggle AbRank) e geração via **LM Studio** no host. A UI e o pipeline Python rodam **no Docker**; dados sensíveis e o modelo de linguagem ficam na sua máquina.
 
 | Documento | Função |
 |-----------|--------|
@@ -17,7 +17,7 @@ Assistente_de_lab/
 ├── docker/streamlit/Dockerfile # Imagem da app (usuário não-root, HEALTHCHECK HTTP)
 ├── .env.docker.example         # Modelo de `.env` (segredos ficam só no `.env`)
 ├── apps/streamlit/
-│   ├── app.py                  # UI: Conversa, Documentos, Desenvolvimento (RAG, OLAP, diagnóstico)
+│   ├── app.py                  # UI: Conversa, Documentos, ML tradicional, Desenvolvimento
 │   ├── chat_router.py          # Roteador: documentos vs planilhas por mensagem
 │   ├── projects_loader.py      # Inventário: um subdiretório de 1º nível = projeto
 │   ├── qwen35_inference.py     # Parâmetros Qwen3.5 / strip de thinking
@@ -86,18 +86,18 @@ docker compose up -d --build
 3. **Documentos** — **Atualizar base agora** (primeira vez ou após mudanças nos arquivos).
 4. **Desenvolvimento → Busca semântica** — valide recuperação de trechos.
 5. **Conversa** — envie uma mensagem; documentos e planilhas entram automaticamente quando disponíveis.
-6. **ML tradicional** — carregue o projeto 253 (Dengue), revise o dicionário de colunas, treine com FLAML, salve `.pkl` e teste predição em CSV/Excel novo.
+6. **ML tradicional** — carregue **AbRank (Kaggle)**, revise o dicionário, treine FLAML (`log_Aff`), salve `.pkl` e teste predição em lote novo.
 
 ### ML tradicional (aba dedicada)
 
-Dataset padrão: `{PROJETOS}/253 - ELISA indireto Dengue/results/` (`amostras_dengue.xlsx` + `Compilado_resultado_otimizacao.xlsx`).
+Dataset padrão: **[AbRank no Kaggle](https://www.kaggle.com/datasets/aurlienplissier/abrank)** (`aurlienplissier/abrank`), split `Benchmarks/train_regression.csv`, alvo **`log_Aff`** (regressão de afinidade anticorpo–antígeno).
 
 | Variável | Descrição |
 |----------|-----------|
 | `ASSISTENTE_ML_DIR` | Onde salvar modelos `.pkl` (Docker: `/data/ml`) |
-| `ASSISTENTE_ML_DENGUE_RESULTS` | Caminho explícito para a pasta `results/` (opcional) |
-
-O catálogo de colunas (descrições e colunas sugeridas para remover) fica em `apps/streamlit/ml/catalogs/dengue_elisa_253.yaml` — edite conforme o protocolo evoluir.
+| `KAGGLE_API_TOKEN` | Token da API Kaggle (obrigatório fora do Kaggle Notebooks) |
+| `KAGGLEHUB_CACHE` | Cache dos downloads (Docker: `/data/ml/kagglehub`) |
+Catálogo YAML em `apps/streamlit/ml/catalogs/abrank_kaggle.yaml`.
 
 ---
 

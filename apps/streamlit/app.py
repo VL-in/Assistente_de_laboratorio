@@ -65,7 +65,6 @@ from projects_loader import (
     validate_projetos_root,
 )
 from olap import (
-    DEMO_TABLE,
     TABULAR_EXTENSIONS,
     check_duckdb,
     demo_aggregation,
@@ -80,6 +79,9 @@ from olap import (
     sync_tabular_from_scans,
 )
 from olap.schema_catalog import build_schema_catalog_text
+from ml.paths import ml_models_root
+from ml.kaggle_sources import kaggle_cache_root
+from ml.training import flaml_available
 from rag import (
     EMBEDDING_MODEL_ID,
     build_index,
@@ -1297,8 +1299,17 @@ def _tab_diagnostico(root: Path, root_ok: bool, root_msg: str) -> None:
     st.subheader("Caminhos")
     st.code(f"Raiz resolvida (UI): {root}\nVálida: {root_ok} — {root_msg}", language="text")
     st.markdown(
-        "No Compose, volumes típicos: `/data/projetos` (ingestão), `/data/txtai`, `/data/duckdb`, `/data/sqlite`."
+        "No Compose, volumes típicos: `/data/projetos`, `/data/txtai`, `/data/duckdb`, "
+        "`/data/ml`, `/data/sqlite`."
     )
+
+    st.subheader("ML tradicional (FLAML)")
+    flaml_ok, flaml_detail = flaml_available()
+    st.write(f"- Modelos `.pkl`: `{ml_models_root()}`")
+    st.write(f"- Cache Kaggle: `{kaggle_cache_root()}`")
+    st.write(f"- FLAML disponível: **{'sim' if flaml_ok else 'não'}**")
+    if not flaml_ok and flaml_detail:
+        st.caption(flaml_detail)
 
     st.subheader("txtai / RAG")
     st.write(f"- `ASSISTENTE_TXTAI_DIR` / dados: `{txtai_data_root()}`")
