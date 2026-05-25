@@ -7,6 +7,7 @@ Só deve ser chamada quando o roteador de intenção marca ``use_ml`` (pedido ex
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,7 +32,14 @@ from qwen35_inference import (
 )
 
 _JSON_OBJECT = re.compile(r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}", re.DOTALL)
-_EXTRACT_MAX_TOKENS = min(512, chat_max_tokens(ml_route=True))
+
+# Limite separado para o extrator de features: sequências de aminoácidos podem ter
+# centenas de caracteres cada, exigindo muito mais tokens do que a resposta final do chat.
+# Controlado por CHAT_ML_EXTRACT_MAX_TOKENS (padrão 2048).
+_EXTRACT_MAX_TOKENS = max(
+    2048,
+    int(os.environ.get("CHAT_ML_EXTRACT_MAX_TOKENS", "2048") or "2048"),
+)
 
 _EXTRACT_SYSTEM = """Você extrai valores de features para predição com um modelo ML de laboratório.
 
