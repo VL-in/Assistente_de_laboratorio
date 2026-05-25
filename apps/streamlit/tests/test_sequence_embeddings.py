@@ -71,7 +71,8 @@ class SequenceEmbeddingTransformerTests(unittest.TestCase):
         def embed_batch(seqs: list[str]) -> np.ndarray:
             out = np.zeros((len(seqs), hidden), dtype=np.float32)
             for i, s in enumerate(seqs):
-                if s:
+                # Pandas converte None em NaN (float); só medimos comprimento de strings reais.
+                if isinstance(s, str) and s:
                     out[i, 0] = len(s)
             return out
 
