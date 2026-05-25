@@ -1,6 +1,6 @@
 # Assistente de lab
 
-Aplicação web **MVP offline-first** para apoiar P&D com documentos locais, **RAG** (txtai + embeddings multilíngues), **OLAP** (planejado: DuckDB) e geração via **LM Studio** no host. A UI e o pipeline Python rodam **no Docker**; dados sensíveis e o modelo de linguagem ficam na sua máquina.
+Aplicação web **MVP offline-first** para apoiar P&D com documentos locais, **RAG** (txtai + embeddings multilíngues), **OLAP** (DuckDB), **ML tradicional** (FLAML + Kaggle AbRank) e geração via **LM Studio** no host. A UI e o pipeline Python rodam **no Docker**; dados sensíveis e o modelo de linguagem ficam na sua máquina.
 
 | Documento | Função |
 |-----------|--------|
@@ -17,11 +17,12 @@ Assistente_de_lab/
 ├── docker/streamlit/Dockerfile # Imagem da app (usuário não-root, HEALTHCHECK HTTP)
 ├── .env.docker.example         # Modelo de `.env` (segredos ficam só no `.env`)
 ├── apps/streamlit/
-│   ├── app.py                  # UI: Conversa, Documentos, Desenvolvimento (RAG, OLAP, diagnóstico)
+│   ├── app.py                  # UI: Conversa, Documentos, ML tradicional, Desenvolvimento
 │   ├── chat_router.py          # Roteador: documentos vs planilhas por mensagem
 │   ├── projects_loader.py      # Inventário: um subdiretório de 1º nível = projeto
 │   ├── qwen35_inference.py     # Parâmetros Qwen3.5 / strip de thinking
 │   ├── olap/                   # DuckDB: ingestão, NL→SQL, catálogo
+│   ├── ml/                     # ML tradicional: FLAML, catálogo de colunas, .pkl
 │   ├── rag/                    # Extração, chunking, índice txtai (upsert em lotes)
 │   └── requirements.txt
 ```
@@ -85,6 +86,19 @@ docker compose up -d --build
 3. **Documentos** — **Atualizar base agora** (primeira vez ou após mudanças nos arquivos).
 4. **Desenvolvimento → Busca semântica** — valide recuperação de trechos.
 5. **Conversa** — envie uma mensagem; documentos e planilhas entram automaticamente quando disponíveis.
+6. **ML tradicional** — carregue **AbRank (Kaggle)**, revise o dicionário, treine FLAML (`log_Aff`), salve `.pkl` e teste predição em lote novo.
+
+### ML tradicional (aba dedicada)
+
+Dataset padrão: **[AbRank no Kaggle](https://www.kaggle.com/datasets/aurlienplissier/abrank)** (`aurlienplissier/abrank`), split `Benchmarks/train_regression.csv`, alvo **`log_Aff`** (regressão de afinidade anticorpo–antígeno).
+
+| Variável | Descrição |
+|----------|-----------|
+| `ASSISTENTE_ML_DIR` | Onde salvar modelos `.pkl` (Docker: `/data/ml`) |
+| `ASSISTENTE_ML_CHAT_MODEL` | Caminho do `.pkl` usado no chat (padrão: `/data/ml/modelo_20260524_224734_04768.pkl`) |
+| `KAGGLE_API_TOKEN` | Token da API Kaggle (obrigatório fora do Kaggle Notebooks) |
+| `KAGGLEHUB_CACHE` | Cache dos downloads (Docker: `/data/ml/kagglehub`) |
+Catálogo YAML em `apps/streamlit/ml/catalogs/abrank_kaggle.yaml`.
 
 ---
 
@@ -156,7 +170,8 @@ Implementação no código: `apps/streamlit/qwen35_inference.py`.
 |---------|-----|
 | `/data/projetos` | Bind do host: documentos dos projetos (**somente leitura**) |
 | `/data/txtai` | Volume nomeado: índice vetorial RAG (persiste entre reinícios) |
-| `/data/duckdb` | Volume nomeado: OLAP (fases futuras) |
+| `/data/duckdb` | Volume nomeado: OLAP |
+| `/data/ml` | Volume nomeado: modelos ML (`.pkl`) |
 | `/data/sqlite` | Volume nomeado: metadados (fases futuras) |
 
 ### Saúde do contêiner (HEALTHCHECK)

@@ -202,7 +202,8 @@ class BrazilianNumberConversionTests(unittest.TestCase):
     def test_column_text_stays_text(self) -> None:
         series = pd.Series(["Reagente A", "Placa B", "Anticorpo C"])
         converted = _try_convert_column_to_numeric(series)
-        self.assertEqual(converted.dtype, object)
+        # Pandas >=2.x pode inferir StringDtype para colunas de texto; ambos são aceitáveis.
+        self.assertFalse(pd.api.types.is_numeric_dtype(converted))
         self.assertEqual(converted.iloc[0], "Reagente A")
 
 

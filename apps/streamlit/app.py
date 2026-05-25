@@ -12,6 +12,7 @@ Abas da UI (usuário final)
 --------------------------
 0. Conversa — chat com o agente (documentos e planilhas usados automaticamente).
 1. Documentos — escanear pastas, inventário e atualização da base de conhecimento.
+2. ML tradicional — AutoML (FLAML), dicionário de colunas, exportação .pkl e predição.
 
 Aba Desenvolvimento (sub-abas internas)
 ---------------------------------------
@@ -43,8 +44,11 @@ from llm_config import (
 )
 from chat_router import classification_needs_llm, resolve_chat_routes
 from qwen35_inference import (
-    DEFAULT_CHAT_MAX_TOKENS,
+    chat_history_chars_per_message,
+    chat_max_history_turns,
+    chat_max_tokens,
     create_chat_completion,
+    effective_chat_limits,
     env_enable_thinking_default,
     is_qwen35_model,
     iter_stream_answer_text,
@@ -64,7 +68,6 @@ from projects_loader import (
     validate_projetos_root,
 )
 from olap import (
-    DEMO_TABLE,
     TABULAR_EXTENSIONS,
     check_duckdb,
     demo_aggregation,
@@ -79,6 +82,10 @@ from olap import (
     sync_tabular_from_scans,
 )
 from olap.schema_catalog import build_schema_catalog_text
+from ml.paths import chat_ml_model_available, chat_ml_model_path, ml_models_root
+from ml.chat_infer import load_chat_model_bundle, ml_inference_status_message, run_chat_ml_inference
+from ml.kaggle_sources import kaggle_cache_root
+from ml.training import flaml_available
 from rag import (
     EMBEDDING_MODEL_ID,
     build_index,
@@ -91,6 +98,7 @@ from rag import (
     txtai_data_root,
     txtai_index_path,
 )
+from ml.ui import render_ml_tab
 
 # ── System prompt ────────────────────────────────────────────────────────────
 # Instrução base enviada ao LLM em todas as conversas. Quando o RAG está ativo,
@@ -114,6 +122,7 @@ Estamos trabalhando em um laboratório de p&D que está com projeto de ELISA ati
 - Ao final de cada resposta, seja cordial e pergunte se pode ajudar com mais alguma dúvida.
 - Faça sempre uma pergunta de cada vez.
 - Caso não tenha encontrado respostas nos documentos, expresse isso educadamente.
+- Quando houver bloco de predição ML no contexto, explique o resultado com base somente nesses números; não invente predições fora do que foi calculado.
 </constraints>
 
 <goals>
@@ -126,6 +135,26 @@ Estamos trabalhando em um laboratório de p&D que está com projeto de ELISA ati
 Sempre use a mesma língua do usuário. Por padrão, utilize português brasileiro. Seja cordial, profissional, objetivo e educado.
 </invocation>"""
 )
+
+CHAT_ML_SYSTEM_PROMPT = (
+    """<role>
+Você é um assistente de laboratório que interpreta predições de um modelo de ML já treinado (afinidade Ab–Ag, benchmark AbRank).
+</role>
+
+<constraints>
+- A predição numérica JÁ FOI CALCULADA localmente e está no bloco "Resultado da inferência ML" abaixo.
+- Use SOMENTE os valores dessa tabela na resposta. Não diga que falta acesso a documentos ou planilhas para esta pergunta.
+- Não peça ao usuário para buscar documentos quando a tabela de predição estiver presente.
+- Se o bloco indicar falha ou dados insuficientes, explique o que falta (nomes exatos das colunas) sem inventar números.
+- Seja objetivo: 2–3 parágrafos curtos com o valor de `predicao_log_aff` (ou `predicao`) e interpretação breve.
+- Ao final, pergunte se pode ajudar com mais alguma dúvida.
+</constraints>
+
+<invocation>
+Responda em português brasileiro, cordial e profissional.
+</invocation>"""
+)
+
 
 st.set_page_config(
     page_title="Assistente Lab",
@@ -214,6 +243,14 @@ def _txtai_backend_cached(mtime_key: float):
     return emb
 
 
+@st.cache_resource(show_spinner="Carregando modelo ML…")
+def _ml_bundle_cached(model_path: str, mtime_key: float):
+    """Carrega o ``ModelBundle`` do disco; invalida quando o .pkl muda."""
+    if mtime_key <= 0:
+        return None
+    return load_chat_model_bundle(Path(model_path))
+
+
 def rag_semantic_search(
     query: str,
     limit: int,
@@ -289,24 +326,35 @@ def _check_openai_compatible_models(base_url: str, *, timeout_s: float = 5.0) ->
         return False, str(e)
 
 
-def _trim_chat_history(messages: list[dict], max_turns: int) -> list[dict]:
+def _trim_chat_history(
+    messages: list[dict],
+    max_turns: int,
+    *,
+    max_chars_per_message: int | None = None,
+) -> list[dict]:
     """
     Retorna os últimos ``max_turns`` pares (user + assistant) do histórico.
 
     Cada "turno" corresponde a 2 mensagens (1 do usuário + 1 do assistente),
     portanto o limite em mensagens é ``max_turns × 2``.
 
-    Sem truncagem, o histórico cresce sem limite e o prompt total (system
-    prompt + contexto RAG até 12 k chars + histórico) pode ultrapassar a
-    janela de contexto do modelo, causando respostas truncadas ou erros
-    silenciosos dependendo do backend LLM.
+    Com ``max_chars_per_message``, encurta cada mensagem (útil na rota ML,
+    onde respostas longas do assistente não precisam ir inteiras ao prompt).
     """
     if max_turns <= 0:
         return []
-    max_msgs = max_turns * 2  # cada turno = 1 mensagem do usuário + 1 do assistente
-    if len(messages) <= max_msgs:
-        return messages
-    return messages[-max_msgs:]
+    max_msgs = max_turns * 2
+    trimmed = messages if len(messages) <= max_msgs else messages[-max_msgs:]
+    if not max_chars_per_message or max_chars_per_message <= 0:
+        return trimmed
+    out: list[dict] = []
+    for m in trimmed:
+        role = m.get("role", "user")
+        content = str(m.get("content") or "")
+        if len(content) > max_chars_per_message:
+            content = content[:max_chars_per_message] + "…"
+        out.append({"role": role, "content": content})
+    return out
 
 
 # ── Barra lateral ────────────────────────────────────────────────────────────
@@ -878,12 +926,24 @@ def _chat_effective_options() -> dict:
         if dev_override
         else has_ingested_tables()
     )
+    use_ml = (
+        bool(st.session_state.get("dev_chat_use_ml", True))
+        if dev_override
+        else chat_ml_model_available()
+    )
     return {
         "use_rag": use_rag and index_ready(),
         "use_olap": use_olap and has_ingested_tables(),
+        "use_ml": use_ml and chat_ml_model_available(),
         "rag_top_k": int(st.session_state.get("dev_chat_rag_top_k", 6)),
-        "max_tokens": int(st.session_state.get("dev_chat_max_tokens", DEFAULT_CHAT_MAX_TOKENS)),
-        "max_history_turns": int(st.session_state.get("dev_chat_max_history_turns", 8)),
+        "max_tokens": int(
+            st.session_state.get("dev_chat_max_tokens", chat_max_tokens(ml_route=False))
+        ),
+        "max_history_turns": int(
+            st.session_state.get(
+                "dev_chat_max_history_turns", chat_max_history_turns(ml_route=False)
+            )
+        ),
         "use_thinking": bool(st.session_state.get("dev_chat_use_thinking", env_enable_thinking_default())),
         "use_stream": bool(st.session_state.get("chat_use_stream", True)),
     }
@@ -894,7 +954,7 @@ def _tab_chat_dev_controls() -> None:
     st.subheader("Parâmetros do chat")
     st.caption(
         "Com *configuração manual*, os toggles substituem o roteador LLM. "
-        "Sem isso, um classificador leve decide se cada mensagem consulta documentos/planilhas."
+        "Sem isso, um classificador leve decide se cada mensagem consulta documentos, planilhas ou predição ML."
     )
     base, model, _ = llm_runtime_config()
     st.caption(f"Servidor: `{base}` · Modelo: `{model}`")
@@ -905,7 +965,7 @@ def _tab_chat_dev_controls() -> None:
         help="Desligado: documentos e planilhas entram automaticamente quando existirem.",
     )
 
-    c0, c1, c2, c3 = st.columns(4)
+    c0, c1, c2, c3, c4 = st.columns(5)
     with c0:
         st.toggle(
             "Documentos",
@@ -922,21 +982,44 @@ def _tab_chat_dev_controls() -> None:
         )
     with c2:
         st.toggle(
+            "ML (predição)",
+            value=True,
+            key="dev_chat_use_ml",
+            disabled=not st.session_state.get("dev_chat_override"),
+        )
+    with c3:
+        st.toggle(
             "Raciocínio",
             value=env_enable_thinking_default(),
             key="dev_chat_use_thinking",
             disabled=not is_qwen35_model(model) or not st.session_state.get("dev_chat_override"),
         )
-    with c3:
+    with c4:
         st.toggle("Streaming", value=True, key="chat_use_stream")
+    st.caption(f"Modelo ML do chat: `{chat_ml_model_path()}`")
 
     c4, c5, c6 = st.columns(3)
     with c4:
         st.number_input("Trechos", 1, 20, 6, key="dev_chat_rag_top_k")
     with c5:
-        st.number_input("Máx. tokens", 256, 32768, DEFAULT_CHAT_MAX_TOKENS, step=256, key="dev_chat_max_tokens")
+        st.number_input(
+            "Máx. tokens",
+            256,
+            32768,
+            int(chat_max_tokens(ml_route=False)),
+            step=256,
+            key="dev_chat_max_tokens",
+            help="Na rota de predição ML, o teto efetivo é CHAT_ML_MAX_TOKENS (padrão 768).",
+        )
     with c6:
-        st.number_input("Turnos no histórico", 1, 30, 8, key="dev_chat_max_history_turns")
+        st.number_input(
+            "Turnos no histórico",
+            1,
+            30,
+            int(chat_max_history_turns(ml_route=False)),
+            key="dev_chat_max_history_turns",
+            help="Na rota ML, usa no máximo CHAT_ML_MAX_HISTORY_TURNS (padrão 2).",
+        )
 
     scans: list[ProjectScan] | None = st.session_state.get("last_scan")
     if scans and st.session_state.get("dev_chat_override"):
@@ -964,6 +1047,7 @@ def _tab_chat() -> None:
     opts = _chat_effective_options()
     use_rag = opts["use_rag"]
     use_olap = opts["use_olap"]
+    use_ml = opts["use_ml"]
     rag_top_k = opts["rag_top_k"]
     max_tokens = opts["max_tokens"]
     max_history_turns = opts["max_history_turns"]
@@ -973,7 +1057,7 @@ def _tab_chat() -> None:
     if "chat_messages" not in st.session_state:
         st.session_state.chat_messages = []
 
-    status_a, status_b, actions = st.columns([2, 2, 1])
+    status_a, status_b, status_c, actions = st.columns([2, 2, 2, 1])
     with status_a:
         if index_ready():
             st.caption("Documentos prontos para consulta")
@@ -984,6 +1068,8 @@ def _tab_chat() -> None:
             st.caption("Planilhas disponíveis para consulta")
         else:
             st.caption("Nenhuma planilha indexada ainda")
+    with status_c:
+        st.caption(ml_inference_status_message())
     with actions:
         if st.button("Limpar", key="btn_clear_chat", use_container_width=True):
             st.session_state.chat_messages = []
@@ -1018,6 +1104,7 @@ def _tab_chat() -> None:
             model=model,
             documents_enabled=use_rag and index_ready(),
             spreadsheets_enabled=use_olap and has_ingested_tables(),
+            ml_enabled=use_ml,
             manual_override=show_dev_details,
         )
         needs_llm_router = not show_dev_details and classification_needs_llm(prompt)
@@ -1026,12 +1113,14 @@ def _tab_chat() -> None:
                 route = resolve_chat_routes(**_route_kwargs)
         else:
             route = resolve_chat_routes(**_route_kwargs)
-        run_rag = route.use_documents
-        run_olap = route.use_spreadsheets
+        run_ml = route.use_ml
+        run_rag = route.use_documents and not run_ml
+        run_olap = route.use_spreadsheets and not run_ml
         if show_dev_details:
             st.caption(
                 f"Roteador ({route.source}): documentos={'sim' if run_rag else 'não'} · "
-                f"planilhas={'sim' if run_olap else 'não'}"
+                f"planilhas={'sim' if run_olap else 'não'} · "
+                f"ml={'sim' if run_ml else 'não'}"
                 + (
                     f" · RAG projetos={', '.join(sorted(rag_project_ids))}"
                     if rag_project_ids
@@ -1039,7 +1128,7 @@ def _tab_chat() -> None:
                 )
             )
 
-        system_prompt = CHAT_SYSTEM_PROMPT
+        system_prompt = CHAT_ML_SYSTEM_PROMPT if run_ml else CHAT_SYSTEM_PROMPT
         if run_rag:
             hits = rag_semantic_search(
                 prompt, int(rag_top_k), project_ids=rag_project_ids
@@ -1056,6 +1145,43 @@ def _tab_chat() -> None:
                 system_prompt += (
                     "\n\n(Nenhum trecho relevante foi recuperado do índice para esta pergunta — "
                     "não invente dados de ensaios.)"
+                )
+
+        ml_result = None
+        if run_ml:
+            model_path = chat_ml_model_path()
+            mtime = model_path.stat().st_mtime if model_path.is_file() else 0.0
+            bundle = _ml_bundle_cached(str(model_path), mtime)
+            with st.spinner(
+                "Executando predição ML"
+                + (" (ESM-2 + modelo)…" if getattr(bundle, "sequence_transformer", None) else "…")
+            ):
+                ml_result = run_chat_ml_inference(
+                    prompt,
+                    history=history_before,
+                    client=client,
+                    model=model,
+                    bundle=bundle,
+                    model_path=model_path,
+                )
+            if ml_result.context_for_llm:
+                system_prompt += "\n\n" + ml_result.context_for_llm
+            if show_dev_details:
+                with st.expander("Predição ML (dev)", expanded=False):
+                    if ml_result.predictions is not None:
+                        st.dataframe(
+                            ml_result.predictions,
+                            use_container_width=True,
+                            hide_index=True,
+                        )
+                    if ml_result.raw_llm_response:
+                        st.code(ml_result.raw_llm_response, language="json")
+                    if ml_result.error and not ml_result.ok:
+                        st.warning(ml_result.error)
+            elif ml_result.error and not ml_result.ok and not ml_result.context_for_llm:
+                system_prompt += (
+                    f"\n\n### Predição ML (falha)\n{ml_result.error}\n"
+                    "Explique o problema e o que o usuário precisa informar."
                 )
 
         olap_result = None
@@ -1091,9 +1217,23 @@ def _tab_chat() -> None:
                     "Explique o problema ao usuário sem inventar números de planilhas."
                 )
 
-        history_trimmed = _trim_chat_history(
-            st.session_state.chat_messages, int(max_history_turns)
+        reply_max_tokens, history_turns = effective_chat_limits(
+            run_ml=run_ml,
+            max_tokens=int(max_tokens),
+            max_history_turns=int(max_history_turns),
         )
+        history_chars = chat_history_chars_per_message(ml_route=run_ml)
+        history_trimmed = _trim_chat_history(
+            st.session_state.chat_messages,
+            int(history_turns),
+            max_chars_per_message=history_chars,
+        )
+        if show_dev_details and run_ml:
+            st.caption(
+                f"Limites ML: max_tokens={reply_max_tokens} · "
+                f"histórico={history_turns} turno(s) · "
+                f"{history_chars} chars/msg"
+            )
         api_messages = [{"role": "system", "content": system_prompt}]
         api_messages += [
             {
@@ -1119,7 +1259,7 @@ def _tab_chat() -> None:
                             messages=api_messages,
                             model=model,
                             profile=chat_profile,
-                            max_tokens=int(max_tokens),
+                            max_tokens=int(reply_max_tokens),
                             stream=True,
                         )
 
@@ -1138,7 +1278,7 @@ def _tab_chat() -> None:
                                 messages=api_messages,
                                 model=model,
                                 profile=chat_profile,
-                                max_tokens=int(max_tokens),
+                                max_tokens=int(reply_max_tokens),
                                 stream=False,
                             )
                         raw = (completion.choices[0].message.content or "").strip()
@@ -1295,8 +1435,17 @@ def _tab_diagnostico(root: Path, root_ok: bool, root_msg: str) -> None:
     st.subheader("Caminhos")
     st.code(f"Raiz resolvida (UI): {root}\nVálida: {root_ok} — {root_msg}", language="text")
     st.markdown(
-        "No Compose, volumes típicos: `/data/projetos` (ingestão), `/data/txtai`, `/data/duckdb`, `/data/sqlite`."
+        "No Compose, volumes típicos: `/data/projetos`, `/data/txtai`, `/data/duckdb`, "
+        "`/data/ml`, `/data/sqlite`."
     )
+
+    st.subheader("ML tradicional (FLAML)")
+    flaml_ok, flaml_detail = flaml_available()
+    st.write(f"- Modelos `.pkl`: `{ml_models_root()}`")
+    st.write(f"- Cache Kaggle: `{kaggle_cache_root()}`")
+    st.write(f"- FLAML disponível: **{'sim' if flaml_ok else 'não'}**")
+    if not flaml_ok and flaml_detail:
+        st.caption(flaml_detail)
 
     st.subheader("txtai / RAG")
     st.write(f"- `ASSISTENTE_TXTAI_DIR` / dados: `{txtai_data_root()}`")
@@ -1369,7 +1518,7 @@ root_ok, root_msg = validate_projetos_root(root)
 st.title("Assistente Lab")
 st.caption("Assistente para documentos e dados do laboratório — uso local e offline.")
 
-tabs = st.tabs(["Conversa", "Documentos", "Desenvolvimento"])
+tabs = st.tabs(["Conversa", "Documentos", "ML tradicional", "Desenvolvimento"])
 
 scans: list[ProjectScan] | None = st.session_state.get("last_scan")
 
@@ -1378,4 +1527,6 @@ with tabs[0]:
 with tabs[1]:
     _tab_documentos(root, root_ok, root_msg)
 with tabs[2]:
+    render_ml_tab()
+with tabs[3]:
     _tab_desenvolvimento(root, root_ok, root_msg, scans)

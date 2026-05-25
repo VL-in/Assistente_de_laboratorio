@@ -14,6 +14,9 @@ todos:
   - id: rag-chat-citacoes
     content: Pipeline txtai (embeddings + índice + RAG) e chat na UI com citações via LM Studio
     status: in_progress
+  - id: ml-tradicional-flaml
+    content: Aba ML tradicional (FLAML, dicionário de colunas, exportação .pkl e predição em lote)
+    status: in_progress
   - id: seguranca-estabilizacao
     content: Aplicar RBAC, auditoria, guardrails e testes integrados
     status: pending
@@ -26,24 +29,25 @@ isProject: false
 
 Registro factual do que já existe no repositório **sem alterar** a arquitetura-alvo (Docker + Streamlit + txtai + DuckDB + LM Studio no host). Atualizar este bloco a cada marco entregue.
 
-**Última sincronização:** 2026-05-23 (revisão de progresso + corner cases OLAP/RAG/chat).
+**Última sincronização:** 2026-05-23 (ML tradicional FLAML + aba dedicada na UI).
 
 | Marco | Estado | Evidência no código / artefatos |
 |--------|--------|----------------------------------|
-| Runtime Docker + Compose | Entregue | `docker-compose.yml`, `docker/streamlit/Dockerfile`, volumes `/data/projetos` (bind RO), `/data/txtai`, `/data/duckdb`, `/data/sqlite`, `extra_hosts` para `host.docker.internal`, `restart: unless-stopped`, `PYTHONUNBUFFERED` |
+| Runtime Docker + Compose | Entregue | `docker-compose.yml`, `docker/streamlit/Dockerfile`, volumes `/data/projetos` (bind RO), `/data/txtai`, `/data/duckdb`, `/data/ml`, `/data/sqlite`, `extra_hosts` para `host.docker.internal`, `restart: unless-stopped`, `PYTHONUNBUFFERED` |
 | HEALTHCHECK da imagem | Entregue | `Dockerfile`: GET HTTP `/_stcore/health` na porta do Streamlit (8502) |
-| UI Streamlit (layout + abas) | Entregue | `apps/streamlit/app.py`: **Conversa**, **Documentos**, **Desenvolvimento** (sub-abas: visão, chat dev, RAG, índice, OLAP, diagnóstico) |
+| UI Streamlit (layout + abas) | Entregue | `apps/streamlit/app.py`: **Conversa**, **Documentos**, **ML tradicional**, **Desenvolvimento** (sub-abas: visão, chat dev, RAG, índice, OLAP, diagnóstico) |
 | Inventário segmentado por projeto | Entregue | `apps/streamlit/projects_loader.py`: um subdiretório de primeiro nível = um `project_id`; varredura recursiva; hash SHA-256 opcional no scan; tolerância a `OSError` em stat/hash/walk; `filter_scans_by_extensions` evita re-scan para OLAP |
 | Parsing documental (docx, planilhas, etc.) | Entregue | `apps/streamlit/rag/extract.py`: `.docx`, `.xlsx`, `.xlsm`, `.pdf`, `.txt`, `.md`, `.csv` |
 | Pipeline txtai (chunking + índice + busca) | Entregue | `apps/streamlit/rag/chunking.py`, `rag/index_txtai.py`, `rag/paths.py`; modelo `sentence-transformers/paraphrase-multilingual-mpnet-base-v2`; persistência em `/data/txtai`; filtro opcional por `project_id` na busca |
 | Chat + RAG + LM Studio | Entregue | `app.py`: cliente OpenAI cacheado; roteador de intenção (`chat_router.py`); Qwen3.5 (`qwen35_inference.py`); streaming sem flash de `<think>`; filtro RAG por projeto (Documentos / dev) |
 | Reindexação incremental por hash de arquivo | Entregue | `rag/manifest.json` + `build_index` incremental: compara SHA-256, `delete` de chunks obsoletos, `upsert` só em arquivos novos/alterados/removidos |
 | DuckDB / OLAP na UI | Entregue | `apps/streamlit/olap/`: ingestão CSV/XLSX/XLSM → DuckDB; catálogo; NL→SQL read-only (`nl_query.py`); demo opcional; sync automático no escaneamento; salvaguarda contra drop em scan vazio |
+| ML tradicional (FLAML) na UI | Parcial | `apps/streamlit/ml/`: **AbRank (Kaggle)** via `kagglehub`, regressão `log_Aff`, catálogo YAML, FLAML, `.pkl`, predição; cache `KAGGLEHUB_CACHE` |
 | Roteador chat (docs vs planilhas) | Entregue | `chat_router.py`: regras + classificador LLM leve; integrado na aba Conversa |
 | Metadados / auditoria (SQLite ou Postgres) | Pendente | Volume `/data/sqlite` no Compose; sem schema, migrações ou trilha no código |
 | Autenticação web | Pendente | Conforme Fase 1 |
 | RBAC, guardrails, testes integrados E2E | Pendente | Conforme Fase 4 |
-| Suíte de testes unitários | Parcial | `apps/streamlit/tests/` — 96+ testes (RAG, OLAP, chat router, Qwen3.5, ingest); sem E2E Compose |
+| Suíte de testes unitários | Parcial | `apps/streamlit/tests/` — 107+ testes (RAG, OLAP, ML/AbRank, chat router, Qwen3.5, ingest); sem E2E Compose |
 
 **Porta do Streamlit (MVP atual):** `8502` (host e contêiner), configurável por `STREAMLIT_PORT` no `.env` do Compose.
 
@@ -57,7 +61,7 @@ Registro factual do que já existe no repositório **sem alterar** a arquitetura
 | 3 — RAG local | ~85% | Fluxo escanear → indexar → buscar → chat com RAG + OLAP automático; filtro por projeto; critério >90% casos curados e guardrails em código em aberto |
 | 4 — Segurança | 0% | Não iniciada |
 
-**Demo atual possível:** escanear projetos → atualizar base (RAG) → **Conversa** com documentos e planilhas (roteador automático) → **Desenvolvimento** para tuning/diagnóstico. **Uso interno “seguro” do playbook** ainda exige Fase 1 (login, auditoria) e Fase 4.
+**Demo atual possível:** escanear projetos → atualizar base (RAG) → **Conversa** com documentos e planilhas (roteador automático) → **ML tradicional** (AbRank/Kaggle, regressão `log_Aff`, `.pkl`, predição) → **Desenvolvimento** para tuning/diagnóstico. **Uso interno “seguro” do playbook** ainda exige Fase 1 (login, auditoria) e Fase 4.
 
 **`apps/api` (FastAPI):** opcional, fora do caminho crítico do MVP (alinhado à nota de arquitetura abaixo).
 
@@ -80,6 +84,7 @@ Construir uma **aplicação web** (não desktop), **containerizada em Docker**, 
   - extração de conteúdo e metadados
   - indexação incremental
   - chat com resposta citando fonte
+  - **ML tradicional** na UI: dicionário de colunas, treino AutoML (FLAML instalação mínima), exportação `.pkl` e predição em dados novos
   - **autenticação na web** + auditoria básica (equivalente ao “login local” do blueprint, adaptado a sessão web)
 
 **Nota de arquitetura**: não há obrigatoriedade de **`FastAPI`** no MVP — o Streamlit chama Python direto. Uma API REST separada só entra no roadmap se surgir necessidade (integrações externas, múltiplos clientes).
@@ -128,7 +133,7 @@ flowchart LR
   - log estruturado e trilha de auditoria base — **pendente**
   - **autenticação web** inicial (equivalente ao login do blueprint: ex. `streamlit-authenticator` ou camada atrás de reverse proxy — escolher e documentar na Fase 0) — **pendente**
 - Critério de pronto:
-  - `docker compose up` sobe a UI; usuário autentica (ou fluxo definido); LM Studio e DuckDB verificáveis pela interface de diagnóstico — **parcial** (UI + LM Studio ok; auth e DuckDB não)
+  - `docker compose up` sobe a UI; usuário autentica (ou fluxo definido); LM Studio e DuckDB verificáveis pela interface de diagnóstico — **parcial** (UI + LM Studio + DuckDB ok; auth pendente)
 
 ## Fase 2 - Ingestão e parsing (Semana 3-4)
 - Implementar pipeline documental (código chamado pelo Streamlit ou módulos importados por ele).
@@ -190,6 +195,7 @@ flowchart LR
 - Escopo inchado: manter SQL-NL e NER/NEN avançado fora do MVP.
 
 ## Backlog pós-MVP (fase 2)
+- ML tradicional: comparativo de experimentos (runs), SHAP/importância, suporte a LightGBM/XGBoost opcional
 - SQL em linguagem natural com executor read-only
 - NER/NEN com `scispaCy` + ontologias
 - Multiagentes especializados por etapa de P&D

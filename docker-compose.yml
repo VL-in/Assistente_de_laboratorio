@@ -15,6 +15,12 @@ services:
       ASSISTENTE_PROJETOS_DIR: /data/projetos
       ASSISTENTE_TXTAI_DIR: /data/txtai
       ASSISTENTE_DUCKDB_DIR: /data/duckdb
+      ASSISTENTE_ML_DIR: /data/ml
+      ASSISTENTE_ML_CHAT_MODEL: ${ASSISTENTE_ML_CHAT_MODEL:-/data/ml/modelo_20260524_224734_04768.pkl}
+      HF_HOME: /data/ml/huggingface
+      TRANSFORMERS_CACHE: /data/ml/huggingface
+      KAGGLEHUB_CACHE: /data/ml/kagglehub
+      KAGGLE_API_TOKEN: ${KAGGLE_API_TOKEN:-}
       LLM_BASE_URL: ${LLM_BASE_URL:-http://192.168.15.7:1234}
       LLM_MODEL: ${LLM_MODEL:-qwen3.5-9b-mtp}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-lm-studio}
@@ -26,6 +32,7 @@ services:
         read_only: true
       - assistente_txtai:/data/txtai
       - assistente_duckdb:/data/duckdb
+      - assistente_ml:/data/ml
       - assistente_sqlite:/data/sqlite
     extra_hosts:
       # Garante host.docker.internal no Linux (Docker 20.10+); no Docker Desktop Win/Mac já existe.
@@ -34,4 +41,5 @@ services:
 volumes:
   assistente_txtai:
   assistente_duckdb:
+  assistente_ml:
   assistente_sqlite:

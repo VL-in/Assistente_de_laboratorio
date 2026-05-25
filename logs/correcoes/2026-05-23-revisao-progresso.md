@@ -56,4 +56,18 @@ cd apps/streamlit
 python -m unittest discover -s tests -p "test_*.py" -v
 ```
 
-Esperado: todos OK (99 testes após novos casos).
+Esperado: todos OK (107 testes após ML/AbRank e revisão geral).
+
+---
+
+## Revisão geral + limpeza (mesmo dia, segunda rodada)
+
+| # | Item | Severidade | Status |
+|---|------|------------|--------|
+| 23 | `kaggle_sources` engolia erros com `except Exception` | Alta | Corrigido (auth/rede propagam) |
+| 24 | `_load_catalog_dataset` chamava `_catalog_picker()` de novo (widget duplicado) | Média | Corrigido |
+| 25 | `prepare_feature_matrix` não descartava `log_Aff` NaN em regressão | Média | Corrigido |
+| 26 | Features 100% NaN (ex. `escape` em amostra) no treino | Baixa | Excluídas em `default_feature_columns` |
+| 27 | `_msg.txt`, imports mortos, `load_bundle_from_path` | Baixa | Removidos |
+| 28 | README/playbook desatualizados (OLAP, demo ML) | Média | Atualizados |
+| 29 | Diagnóstico sem volume `/data/ml` / status FLAML | Baixa | Adicionado em `app.py` |

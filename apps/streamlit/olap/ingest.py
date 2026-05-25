@@ -12,7 +12,6 @@ Após cada sincronização, índices DuckDB (ART) são criados nas colunas de fi
 from __future__ import annotations
 
 import re
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
 

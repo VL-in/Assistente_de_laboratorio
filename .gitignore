@@ -7,3 +7,9 @@ __pycache__/
 
 # Índice txtai local (desenvolvimento fora do Docker)
 apps/streamlit/.txtai_data/
+apps/streamlit/.duckdb_data/
+apps/streamlit/.ml_data/
+
+# Artefatos locais
+_msg.txt
+*.pkl

@@ -15,8 +15,14 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-# Resposta do chat — documentação sugere até 32k tokens; MVP usa default menor na UI.
-DEFAULT_CHAT_MAX_TOKENS = 4096
+# Resposta do chat — alinhado a janela ~4096 no LM Studio (prompt + saída).
+# Predição ML: resposta curta (tabela já veio no system); evita estourar contexto.
+DEFAULT_CHAT_MAX_TOKENS = 2048
+DEFAULT_CHAT_ML_MAX_TOKENS = 768
+DEFAULT_CHAT_MAX_HISTORY_TURNS = 4
+DEFAULT_CHAT_ML_MAX_HISTORY_TURNS = 2
+DEFAULT_CHAT_HISTORY_CHARS = 400
+DEFAULT_CHAT_ML_HISTORY_CHARS = 280
 DEFAULT_SQL_MAX_TOKENS = 2048
 
 _THINK_CLOSED = re.compile(
@@ -79,6 +85,102 @@ PROFILE_CHAT_ROUTER = GenerationProfile(
 )
 
 DEFAULT_ROUTER_MAX_TOKENS = 128
+
+
+def _env_positive_int(
+    name: str,
+    default: int,
+    *,
+    min_val: int = 1,
+    max_val: int = 32768,
+) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return max(min_val, min(max_val, value))
+
+
+def chat_max_tokens(*, ml_route: bool = False) -> int:
+    """Limite de tokens de saída (``CHAT_MAX_TOKENS`` / ``CHAT_ML_MAX_TOKENS``)."""
+    if ml_route:
+        return _env_positive_int(
+            "CHAT_ML_MAX_TOKENS", DEFAULT_CHAT_ML_MAX_TOKENS, min_val=64
+        )
+    return _env_positive_int("CHAT_MAX_TOKENS", DEFAULT_CHAT_MAX_TOKENS, min_val=256)
+
+
+def chat_max_history_turns(*, ml_route: bool = False) -> int:
+    """Pares user+assistant no histórico enviado ao modelo."""
+    if ml_route:
+        return _env_positive_int(
+            "CHAT_ML_MAX_HISTORY_TURNS",
+            DEFAULT_CHAT_ML_MAX_HISTORY_TURNS,
+            min_val=0,
+            max_val=30,
+        )
+    return _env_positive_int(
+        "CHAT_MAX_HISTORY_TURNS",
+        DEFAULT_CHAT_MAX_HISTORY_TURNS,
+        min_val=0,
+        max_val=30,
+    )
+
+
+def chat_history_chars_per_message(*, ml_route: bool = False) -> int:
+    """Truncagem por mensagem no histórico (extrator, roteador e chat)."""
+    if ml_route:
+        return _env_positive_int(
+            "CHAT_ML_HISTORY_CHARS",
+            DEFAULT_CHAT_ML_HISTORY_CHARS,
+            min_val=80,
+            max_val=8000,
+        )
+    return _env_positive_int(
+        "CHAT_HISTORY_CHARS", DEFAULT_CHAT_HISTORY_CHARS, min_val=80, max_val=8000
+    )
+
+
+def format_history_snippet(
+    history: list[dict],
+    *,
+    max_turns: int = 3,
+    max_chars_per_message: int | None = None,
+) -> str:
+    """Últimos turnos user/assistant para roteador, extrator ML e desambiguação."""
+    if not history or max_turns <= 0:
+        return "(sem histórico anterior)"
+    tail = history[-(max_turns * 2) :]
+    char_cap = max_chars_per_message if max_chars_per_message is not None else 400
+    lines: list[str] = []
+    for m in tail:
+        role = m.get("role", "?")
+        content = (m.get("content") or "").strip()
+        if not content:
+            continue
+        if char_cap > 0 and len(content) > char_cap:
+            content = content[:char_cap] + "…"
+        label = "Usuário" if role == "user" else "Assistente"
+        lines.append(f"{label}: {content}")
+    return "\n".join(lines) if lines else "(sem histórico anterior)"
+
+
+def effective_chat_limits(
+    *,
+    run_ml: bool,
+    max_tokens: int,
+    max_history_turns: int,
+) -> tuple[int, int]:
+    """Aplica tetos da rota ML sem alterar limites gerais quando ``run_ml`` é false."""
+    if not run_ml:
+        return max_tokens, max_history_turns
+    return (
+        min(max_tokens, chat_max_tokens(ml_route=True)),
+        min(max_history_turns, chat_max_history_turns(ml_route=True)),
+    )
 
 
 def is_qwen35_model(model_id: str) -> bool:
