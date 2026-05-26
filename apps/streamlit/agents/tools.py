@@ -142,13 +142,13 @@ def duckdb_query_tool(
     Executa a pergunta do usuário em SQL DuckDB read-only.
 
     Internamente chama ``olap.run_nl_olap_query`` que:
-    1. Pede ao LM Studio um SELECT (perfil ``PROFILE_OLAP_SQL``).
+    1. Pede ao OpenRouter um SELECT (perfil ``PROFILE_OLAP_SQL``).
     2. Valida que o SQL é só leitura (`validate_readonly_sql`).
     3. Executa no DuckDB e devolve o DataFrame + texto formatado.
     """
     if not has_ingested_tables():
         return ToolResult(
-            name="duckdb",
+            name="olap",
             ok=False,
             error="Nenhuma planilha ingerida no DuckDB. Escaneie as pastas primeiro.",
             summary="sem tabelas",
@@ -162,7 +162,7 @@ def duckdb_query_tool(
 
     if not result.ok:
         return ToolResult(
-            name="duckdb",
+            name="olap",
             ok=False,
             error=result.error,
             payload={
@@ -176,7 +176,7 @@ def duckdb_query_tool(
     if result.dataframe is not None:
         rows = int(len(result.dataframe))
     return ToolResult(
-        name="duckdb",
+        name="olap",
         ok=True,
         context_for_llm=(
             result.context_for_llm
