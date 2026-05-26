@@ -44,6 +44,7 @@ Registro factual do que já existe no repositório **sem alterar** a arquitetura
 | DuckDB / OLAP na UI | Entregue | `apps/streamlit/olap/`: ingestão CSV/XLSX/XLSM → DuckDB; catálogo; NL→SQL read-only (`nl_query.py`); demo opcional; sync automático no escaneamento; salvaguarda contra drop em scan vazio |
 | ML tradicional (FLAML) na UI | Parcial | `apps/streamlit/ml/`: **AbRank (Kaggle)** via `kagglehub`, regressão `log_Aff`, catálogo YAML, FLAML, `.pkl`, predição; cache `KAGGLEHUB_CACHE` |
 | Roteador chat (docs vs planilhas) | Entregue | `chat_router.py`: regras + classificador LLM leve; integrado na aba Conversa |
+| Sistema multiagentes (CrewAI local) | Entregue | `apps/streamlit/agents/`: Greeter rule-based + Triage Agent + Tools (RAG/OLAP/ML em paralelo) + Synthesizer + `HandoffTrace` exibida em expander dev; flag `USE_CREWAI=1` ativa o pipeline preservando custo de tokens; `AGENTS.md` documenta arquitetura |
 | Metadados / auditoria (SQLite ou Postgres) | Pendente | Volume `/data/sqlite` no Compose; sem schema, migrações ou trilha no código |
 | Autenticação web | Pendente | Conforme Fase 1 |
 | RBAC, guardrails, testes integrados E2E | Pendente | Conforme Fase 4 |

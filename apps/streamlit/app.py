@@ -42,6 +42,13 @@ from llm_config import (
     llm_runtime_config,
     normalize_openai_base_url,
 )
+from agents import (
+    CrewRunResult,
+    crew_enabled,
+    parallel_tools_enabled,
+    run_crew_chat,
+    trace_handoff_enabled,
+)
 from chat_router import classification_needs_llm, resolve_chat_routes
 from qwen35_inference import (
     chat_history_chars_per_message,
@@ -324,6 +331,252 @@ def _check_openai_compatible_models(base_url: str, *, timeout_s: float = 5.0) ->
         if _is_timeout_error(e):
             return False, f"Tempo esgotado ({timeout_s}s), favor atualize a página e tente novamente."
         return False, str(e)
+
+
+def _run_chat_via_crew(
+    *,
+    prompt: str,
+    history_before: list[dict],
+    client: OpenAI,
+    model: str,
+    base: str,
+    use_rag: bool,
+    use_olap: bool,
+    use_ml: bool,
+    rag_top_k: int,
+    rag_project_ids: set[str] | None,
+    max_tokens: int,
+    max_history_turns: int,
+    use_thinking: bool,
+    use_stream: bool,
+    show_dev_details: bool,
+    show_trace: bool,
+    chat_box,
+) -> None:
+    """
+    Caminho A do chat: pipeline multiagente (Triage → Tools → Synthesizer).
+
+    Encapsulado em função separada para deixar o ``_tab_chat`` legível e
+    permitir desligar via toggle sem ramificar todo o código de UI.
+
+    O Synthesizer é executado **aqui** (não dentro do Crew) porque
+    ``st.write_stream`` precisa do gerador da chamada
+    ``create_chat_completion(stream=True)`` neste contexto Streamlit. O Crew
+    apenas prepara as ``messages``, contextos e a trilha.
+    """
+    documents_available = use_rag and index_ready()
+    spreadsheets_available = use_olap and has_ingested_tables()
+    ml_available = use_ml and chat_ml_model_available()
+
+    rag_backend = None
+    if documents_available:
+        rag_backend = _txtai_backend_cached(index_mtime())
+
+    ml_bundle = None
+    ml_path: Path | None = None
+    if ml_available:
+        ml_path = chat_ml_model_path()
+        mtime = ml_path.stat().st_mtime if ml_path.is_file() else 0.0
+        ml_bundle = _ml_bundle_cached(str(ml_path), mtime)
+
+    with st.spinner("Coordenando agentes…"):
+        crew_result = run_crew_chat(
+            prompt,
+            history=history_before,
+            client=client,
+            model=model,
+            rag_backend=rag_backend,
+            rag_top_k=int(rag_top_k),
+            rag_project_ids=rag_project_ids,
+            documents_available=documents_available,
+            spreadsheets_available=spreadsheets_available,
+            ml_available=ml_available,
+            ml_bundle=ml_bundle,
+            ml_model_path=ml_path,
+            parallel_tools=parallel_tools_enabled(),
+        )
+
+    if show_dev_details and crew_result.triage is not None:
+        d = crew_result.triage
+        st.caption(
+            f"Crew ({d.source}): rag={'sim' if d.use_rag else 'não'} · "
+            f"olap={'sim' if d.use_olap else 'não'} · "
+            f"ml={'sim' if d.use_ml else 'não'}"
+            + (f" · motivo: {d.reason}" if d.reason else "")
+        )
+        ml_tool_result = crew_result.tool_results.get("ml")
+        if ml_tool_result is not None:
+            with st.expander("Predição ML (dev)", expanded=False):
+                preds = ml_tool_result.payload.get("predictions")
+                if preds is not None:
+                    st.dataframe(preds, use_container_width=True, hide_index=True)
+                raw = ml_tool_result.payload.get("raw_llm_response")
+                if raw:
+                    st.code(raw, language="json")
+                if ml_tool_result.error:
+                    st.warning(ml_tool_result.error)
+        olap_tool_result = crew_result.tool_results.get("olap")
+        if olap_tool_result is not None and (
+            olap_tool_result.ok or olap_tool_result.payload.get("sql")
+        ):
+            with st.expander("SQL e dados (dev)", expanded=False):
+                sql = olap_tool_result.payload.get("sql")
+                if sql:
+                    st.code(sql, language="sql")
+                df = olap_tool_result.payload.get("dataframe")
+                if df is not None:
+                    st.dataframe(df, use_container_width=True, hide_index=True)
+                if olap_tool_result.error:
+                    st.warning(olap_tool_result.error)
+
+    # Greeter rule-based — resposta determinística sem stream.
+    if crew_result.greeting_response is not None:
+        with chat_box:
+            for msg in st.session_state.chat_messages:
+                with st.chat_message(msg["role"]):
+                    st.markdown(msg["content"])
+            with st.chat_message("assistant"):
+                st.markdown(crew_result.greeting_response)
+        st.session_state.chat_messages.append(
+            {"role": "assistant", "content": crew_result.greeting_response}
+        )
+        if show_trace:
+            _render_handoff_trace(crew_result)
+        return
+
+    if crew_result.synth is None:
+        st.error("Crew não conseguiu preparar o prompt do Synthesizer.")
+        if (
+            st.session_state.chat_messages
+            and st.session_state.chat_messages[-1].get("role") == "user"
+        ):
+            st.session_state.chat_messages.pop()
+        if show_trace:
+            _render_handoff_trace(crew_result)
+        return
+
+    used_ml = crew_result.synth.used_ml
+    reply_max_tokens, history_turns = effective_chat_limits(
+        run_ml=used_ml,
+        max_tokens=int(max_tokens),
+        max_history_turns=int(max_history_turns),
+    )
+    history_chars = chat_history_chars_per_message(ml_route=used_ml)
+
+    # Sanitiza e trunca o histórico do prompt usando os mesmos limites do
+    # caminho legado para preservar o comportamento de janela do LM Studio.
+    api_messages = [
+        {"role": "system", "content": crew_result.synth.system_prompt}
+    ]
+    history_for_api = _trim_chat_history(
+        st.session_state.chat_messages,
+        int(history_turns),
+        max_chars_per_message=history_chars,
+    )
+    api_messages += [
+        {
+            "role": m["role"],
+            "content": sanitize_history_message(m["role"], m["content"], model_id=model),
+        }
+        for m in history_for_api
+    ]
+
+    chat_profile = select_chat_profile(
+        model_id=model, use_thinking=use_thinking and is_qwen35_model(model)
+    )
+
+    if show_dev_details and used_ml:
+        st.caption(
+            f"Limites ML: max_tokens={reply_max_tokens} · "
+            f"histórico={history_turns} turno(s) · "
+            f"{history_chars} chars/msg"
+        )
+
+    with chat_box:
+        for msg in st.session_state.chat_messages:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
+        with st.chat_message("assistant"):
+            try:
+                if use_stream:
+                    stream = create_chat_completion(
+                        client,
+                        messages=api_messages,
+                        model=model,
+                        profile=chat_profile,
+                        max_tokens=int(reply_max_tokens),
+                        stream=True,
+                    )
+
+                    def _token_stream():
+                        yield from iter_stream_answer_text(stream, model_id=model)
+
+                    full_text = st.write_stream(_token_stream)
+                    answer = strip_thinking_blocks(full_text or "")
+                else:
+                    with st.spinner("Gerando resposta…"):
+                        completion = create_chat_completion(
+                            client,
+                            messages=api_messages,
+                            model=model,
+                            profile=chat_profile,
+                            max_tokens=int(reply_max_tokens),
+                            stream=False,
+                        )
+                    raw = (completion.choices[0].message.content or "").strip()
+                    answer = strip_thinking_blocks(raw)
+                    st.markdown(answer)
+                st.session_state.chat_messages.append(
+                    {"role": "assistant", "content": answer}
+                )
+            except Exception as exc:
+                st.error(f"Não foi possível obter resposta do assistente: {exc}")
+                if (
+                    st.session_state.chat_messages
+                    and st.session_state.chat_messages[-1].get("role") == "user"
+                ):
+                    st.session_state.chat_messages.pop()
+                st.caption(
+                    "A última mensagem foi removida; verifique o servidor de IA e tente de novo."
+                )
+
+    if show_trace:
+        _render_handoff_trace(crew_result)
+
+
+def _render_handoff_trace(crew_result: CrewRunResult) -> None:
+    """
+    Exibe a trilha de handoff dos agentes em um expander (modo aprendizado).
+
+    Mostra cada passo (Greeter, Triage, Tools, Synthesizer) com:
+    - duração em ms,
+    - resumo de entrada/saída,
+    - metadados (rota escolhida, contagem de evidências, SQL gerado, etc.).
+    """
+    trace = crew_result.trace
+    if trace.step_count == 0:
+        return
+    with st.expander(
+        f"Trilha dos agentes (dev) · {trace.step_count} etapa(s) · "
+        f"{trace.total_elapsed_ms:.0f} ms",
+        expanded=False,
+    ):
+        for i, step in enumerate(trace.steps, start=1):
+            status_icon = "OK" if step.ok else "ERRO"
+            st.markdown(
+                f"**{i}. {step.name}** · {step.elapsed_ms:.0f} ms · {status_icon}"
+            )
+            if step.input_summary:
+                st.caption(f"entrada: {step.input_summary}")
+            if step.output_summary:
+                st.caption(f"saída: {step.output_summary}")
+            if step.note:
+                st.caption(f"obs: {step.note}")
+            if step.metadata:
+                with st.popover("metadados", use_container_width=False):
+                    st.json(step.metadata)
+            if i < trace.step_count:
+                st.divider()
 
 
 def _trim_chat_history(
@@ -931,6 +1184,8 @@ def _chat_effective_options() -> dict:
         if dev_override
         else chat_ml_model_available()
     )
+    use_crew = bool(st.session_state.get("dev_chat_use_crew", crew_enabled()))
+    show_trace = bool(st.session_state.get("dev_chat_show_trace", trace_handoff_enabled()))
     return {
         "use_rag": use_rag and index_ready(),
         "use_olap": use_olap and has_ingested_tables(),
@@ -946,6 +1201,8 @@ def _chat_effective_options() -> dict:
         ),
         "use_thinking": bool(st.session_state.get("dev_chat_use_thinking", env_enable_thinking_default())),
         "use_stream": bool(st.session_state.get("chat_use_stream", True)),
+        "use_crew": use_crew,
+        "show_trace": show_trace,
     }
 
 
@@ -997,6 +1254,31 @@ def _tab_chat_dev_controls() -> None:
     with c4:
         st.toggle("Streaming", value=True, key="chat_use_stream")
     st.caption(f"Modelo ML do chat: `{chat_ml_model_path()}`")
+
+    # Sistema multiagentes (CrewAI). Ativado por padrão quando USE_CREWAI=1; toggle
+    # permite inverter o comportamento para fins de comparação.
+    cc1, cc2 = st.columns(2)
+    with cc1:
+        st.toggle(
+            "Sistema multiagentes (Crew)",
+            value=crew_enabled(),
+            key="dev_chat_use_crew",
+            help=(
+                "Quando ativo, o chat usa o pipeline Triage → Tools → Synthesizer "
+                "(ver `agents/AGENTS.md`). Custo de tokens equivalente ao roteador "
+                "atual; principal ganho é rastreabilidade."
+            ),
+        )
+    with cc2:
+        st.toggle(
+            "Mostrar trilha do crew (modo aprendizado)",
+            value=trace_handoff_enabled(),
+            key="dev_chat_show_trace",
+            help=(
+                "Exibe um expander abaixo da resposta com cada etapa do Crew "
+                "(Greeter, Triage, RAG/OLAP/ML, Synthesizer) e seus metadados."
+            ),
+        )
 
     c4, c5, c6 = st.columns(3)
     with c4:
@@ -1053,6 +1335,8 @@ def _tab_chat() -> None:
     max_history_turns = opts["max_history_turns"]
     use_thinking = opts["use_thinking"]
     use_stream = opts["use_stream"]
+    use_crew = opts["use_crew"]
+    show_trace = opts["show_trace"]
 
     if "chat_messages" not in st.session_state:
         st.session_state.chat_messages = []
@@ -1097,6 +1381,33 @@ def _tab_chat() -> None:
         rag_project_ids = _effective_rag_project_ids(scans)
 
         history_before = st.session_state.chat_messages[:-1]
+
+        # ── Caminho A: Sistema multiagentes (Crew) ──────────────────────────
+        # Triage → Tools (paralelas) → Synthesizer. Greeter rule-based curto-
+        # circuita saudações sem chamar o LLM.
+        if use_crew:
+            _run_chat_via_crew(
+                prompt=prompt,
+                history_before=history_before,
+                client=client,
+                model=model,
+                base=base,
+                use_rag=use_rag,
+                use_olap=use_olap,
+                use_ml=use_ml,
+                rag_top_k=rag_top_k,
+                rag_project_ids=rag_project_ids,
+                max_tokens=max_tokens,
+                max_history_turns=max_history_turns,
+                use_thinking=use_thinking,
+                use_stream=use_stream,
+                show_dev_details=show_dev_details,
+                show_trace=show_trace,
+                chat_box=chat_box,
+            )
+            return
+
+        # ── Caminho B: Roteador legado (chat_router) ────────────────────────
         _route_kwargs = dict(
             message=prompt,
             history=history_before,

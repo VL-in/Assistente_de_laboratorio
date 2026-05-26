@@ -192,6 +192,49 @@ Esperado: **HTTP 200**. Logs: `docker compose logs streamlit --tail 50`.
 
 ---
 
+## Sistema multiagentes (CrewAI local)
+
+Pipeline opcional para orquestrar o chat em agentes especializados rodando inteiramente offline. Ativado por `USE_CREWAI=1` no `.env`.
+
+```
+Mensagem → Greeter (rule-based) → Triage Agent → Tools (RAG, OLAP, ML em paralelo) → Synthesizer Agent → Resposta
+```
+
+| Agente / Tool | Papel | LLM calls |
+|---------------|-------|-----------|
+| **Greeter** | Curto-circuita saudações ("oi", "obrigado") | 0 |
+| **Triage Agent** | Classifica intenção e decide rotas (JSON) | 1 |
+| **RAG Tool** | Busca semântica no índice txtai | 0 (só embedding) |
+| **DuckDB Tool** | NL → SQL read-only no DuckDB | 1 (gera SQL) |
+| **ML Tool** | Extrai features e roda predição AbRank | 1 (extrai features) |
+| **Synthesizer Agent** | Resposta final cordial + citações | 1 (com streaming) |
+
+Detalhes completos: [`apps/streamlit/agents/AGENTS.md`](apps/streamlit/agents/AGENTS.md).
+
+### Modo aprendizado (trilha visível)
+
+Ative o toggle **"Mostrar trilha do crew"** em **Desenvolvimento → Parâmetros do chat** para ver, em um expander abaixo da resposta, cada etapa executada com:
+
+- duração em ms,
+- entrada/saída resumida,
+- metadados (rota escolhida, evidências, SQL gerado, predições).
+
+Ideal para inspecionar o handoff entre agentes durante a curva de aprendizado.
+
+### Comparativo de chamadas LLM (atual × Crew)
+
+| Cenário | Roteador legado | Crew |
+|---------|-----------------|------|
+| Saudação | 0 | 0 |
+| Pergunta só docs | 2 (router + chat) | 2 (triage + synth) |
+| Pergunta só planilhas | 3 (router + SQL + chat) | 3 (triage + SQL + synth) |
+| Pergunta só ML | 3 (router + extract + chat) | 3 (triage + extract + synth) |
+| Pergunta combinada | 3–4 | 3–4 |
+
+Ou seja, o Crew **não aumenta o custo em tokens** — o ganho é em rastreabilidade, manutenção e paralelismo das Tools.
+
+---
+
 ## Pipeline RAG (txtai)
 
 Fluxo implementado na UI:
