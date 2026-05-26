@@ -4,25 +4,14 @@ Greeter rule-based — atalho determinístico para saudações e mensagens socia
 Não chama LLM, não consulta RAG/OLAP/ML. Só responde quando a mensagem é
 estritamente social (oi/obrigado/tchau). Para qualquer coisa fora disso,
 retorna ``None`` e o Crew assume.
+
+A regex de detecção (``SOCIAL_ONLY``) vive em ``agents.intent_rules``,
+compartilhada com o Triage para garantir comportamento idêntico.
 """
 
 from __future__ import annotations
 
-import re
-
-# Lista compatível com ``chat_router._SOCIAL_ONLY``; replicada aqui para que o
-# Greeter não dependa do roteador legado quando ele for aposentado.
-_SOCIAL_ONLY = re.compile(
-    r"^\s*(?:"
-    r"oi|olá|ola|hey|hi|hello|"
-    r"bom\s+dia|boa\s+tarde|boa\s+noite|"
-    r"tudo\s+bem|como\s+vai|e\s+aí|eai|"
-    r"obrigad[oa]|valeu|brigad[oa]|"
-    r"até\s+(?:mais|logo)|tchau|flw|"
-    r"ok|okay|sim|não|nao"
-    r")\s*[!.?…]*\s*$",
-    re.IGNORECASE,
-)
+from agents.intent_rules import is_social_only as _is_social_only_rule
 
 _GREETING_RESPONSE = (
     "Olá! Sou seu assistente de laboratório. Posso ajudar com:\n\n"
@@ -57,11 +46,8 @@ def _normalize(text: str) -> str:
 
 
 def is_social_only(message: str) -> bool:
-    """Replica a heurística do ``chat_router`` para curto-circuito do Crew."""
-    msg = (message or "").strip()
-    if not msg or len(msg) > 80:
-        return False
-    return _SOCIAL_ONLY.match(msg) is not None
+    """Atalho público — delega para ``agents.intent_rules.is_social_only``."""
+    return _is_social_only_rule(message)
 
 
 def handle_greeting(message: str) -> str | None:

@@ -1,10 +1,10 @@
 """
 Triage Agent — classifica intenção da mensagem e decide quais Tools acionar.
 
-Usa o LM Studio com perfil ``PROFILE_CHAT_ROUTER`` (saída JSON curta, temp 0.2).
-Não usa o LLM do CrewAI diretamente — chama o cliente OpenAI com os mesmos
-parâmetros já validados em ``chat_router.classify_with_llm``, garantindo
-compatibilidade com Qwen3.5 (``enable_thinking=False`` para JSON estável).
+Usa o LLM remoto (OpenRouter) com perfil ``PROFILE_CHAT_ROUTER`` (saída JSON
+curta, temp 0.2). As regras determinísticas (regex, fallback rule-based) ficam
+em ``agents.intent_rules`` — compartilhadas com o Greeter e independentes do
+caminho legado ``chat_router`` (aposentado em 2026-05).
 
 Saída: ``TriageDecision(use_rag, use_olap, use_ml, source, reason)``.
 """
@@ -18,11 +18,11 @@ from typing import Any
 
 from openai import OpenAI
 
-from chat_router import (
-    _ML_HINT,
-    _is_social_only,
-    _parse_router_json,
-    _rule_fallback_route,
+from agents.intent_rules import (
+    ML_HINT,
+    is_social_only,
+    parse_router_json,
+    rule_fallback,
 )
 from qwen35_inference import (
     DEFAULT_ROUTER_MAX_TOKENS,
@@ -121,7 +121,7 @@ def classify_intent(
     msg = (message or "").strip()
     hist = history or []
 
-    if _is_social_only(msg):
+    if is_social_only(msg):
         return TriageDecision(
             use_rag=False,
             use_olap=False,
@@ -135,11 +135,11 @@ def classify_intent(
         decision = _classify_with_llm(msg, hist, client, model)
 
     if decision is None:
-        fallback = _rule_fallback_route(msg)
+        rag, olap, ml = rule_fallback(msg)
         decision = TriageDecision(
-            use_rag=fallback.use_documents,
-            use_olap=fallback.use_spreadsheets,
-            use_ml=fallback.use_ml,
+            use_rag=rag,
+            use_olap=olap,
+            use_ml=ml,
             source="rules_fallback",
             reason="fallback por regex",
         )
@@ -170,7 +170,7 @@ def classify_intent(
             reason=decision.reason,
         )
 
-    if ml_available and _ML_HINT.search(msg):
+    if ml_available and ML_HINT.search(msg):
         decision = TriageDecision(
             use_rag=False,
             use_olap=False,
@@ -188,8 +188,8 @@ def _classify_with_llm(
     client: OpenAI,
     model: str,
 ) -> TriageDecision | None:
-    """Chama LM Studio com o system de triagem; ``None`` se a resposta for inválida."""
-    ml_hint = bool(_ML_HINT.search(message))
+    """Chama o LLM remoto (OpenRouter) com o system de triagem; ``None`` se a resposta for inválida."""
+    ml_hint = bool(ML_HINT.search(message))
     hist_turns = chat_max_history_turns(ml_route=ml_hint)
     hist_chars = chat_history_chars_per_message(ml_route=ml_hint)
     user_block = _TRIAGE_USER_TEMPLATE.format(
@@ -217,7 +217,7 @@ def _classify_with_llm(
     except Exception:
         return None
 
-    parsed = _parse_router_json(raw)
+    parsed = parse_router_json(raw)
     if parsed is None:
         return None
     docs, sheets, ml = parsed
