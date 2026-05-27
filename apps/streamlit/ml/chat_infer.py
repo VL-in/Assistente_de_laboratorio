@@ -41,7 +41,10 @@ _EXTRACT_MAX_TOKENS = max(
     int(os.environ.get("CHAT_ML_EXTRACT_MAX_TOKENS", "2048") or "2048"),
 )
 
-_EXTRACT_SYSTEM = """Você extrai valores de features para predição com um modelo ML de laboratório.
+_EXTRACT_SYSTEM = """Você extrai valores de features para predição com um modelo ML de laboratório, o usuário vai fornecer as 3 sequencias em string de aminoácidos.
+Tarefa:
+- Primeiramente você vai identificar o tipo de sequencia que o usuário forneceu, se é heavy chain, light chain ou antigen.
+- Depois você vai extrair o valor da sequencia para a coluna correspondente (Ab_heavy_chain_seq, Ab_light_chain_seq, Ag_seq)
 
 Responda APENAS com JSON válido, sem markdown:
 {"rows": [ { "nome_exato_da_coluna": valor, ... }, ... ], "error": null ou "motivo"}
@@ -53,7 +56,8 @@ Regras:
 - Se o usuário não forneceu dados suficientes para preencher as features obrigatórias, retorne ``rows``: [] e ``error`` explicando o que falta.
 - Não invente valores que o usuário não mencionou; campos ausentes podem ser omitidos (o pipeline imputa medianas).
 - Não inclua a coluna-alvo (target) nas linhas.
-- Colunas de sequência (Ab_heavy_chain_seq, Ab_light_chain_seq, Ag_seq) podem ser strings longas com aminoácidos (A,C,D,E,...)."""
+- Colunas de sequência (Ab_heavy_chain_seq, Ab_light_chain_seq, Ag_seq) podem ser strings longas com aminoácidos (A,C,D,E,...).
+- Caso o usuário não forneça todas as sequencias, você deve devolver a informação de que faltam sequencias para a predição e qual(is) exatamente faltam. Solicite as sequencias que faltam ao usuário."""
 
 _EXTRACT_USER_TEMPLATE = """Esquema de features do modelo (colunas obrigatórias para inferência):
 {schema}
