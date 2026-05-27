@@ -32,8 +32,8 @@ class ChunkingTests(unittest.TestCase):
         self.assertLess(len(parts), 50)
 
     def test_chunking_signature_changes(self) -> None:
-        a = chunking_signature(520, 80, 2_000_000)
-        b = chunking_signature(600, 80, 2_000_000)
+        a = chunking_signature(720, 150, 2_000_000)
+        b = chunking_signature(600, 150, 2_000_000)
         self.assertNotEqual(a, b)
 
 

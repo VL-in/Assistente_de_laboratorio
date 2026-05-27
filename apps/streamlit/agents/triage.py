@@ -40,7 +40,7 @@ Sua única tarefa: ler a última mensagem do usuário e decidir quais especialis
 Especialistas disponíveis:
 - documents (RAG): documentos Word/PDF de experimentos, protocolos, lotes, validades, materiais.
 - spreadsheets (OLAP): planilhas e CSVs com dados tabulares — contagens, médias, somas, comparações, rankings.
-- ml_prediction: modelo ML treinado para afinidade Ab–Ag (AbRank, regressão log_Aff). SOMENTE quando o usuário pedir explicitamente predição/inferência.
+- ml_prediction: modelo ML treinado para afinidade Ab–Ag (AbRank, regressão log_Aff). Usar quando o usuário pergunta sobre afinidade de ligação anticorpo e antígeno e fornece as sequências.
 
 Responda APENAS com JSON válido (sem markdown, sem explicação):
 {"documents": true|false, "spreadsheets": true|false, "ml_prediction": true|false, "reason": "frase curta em pt-BR"}

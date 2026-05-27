@@ -4,8 +4,7 @@ Divisão de texto em chunks com sobreposição para indexação semântica.
 O modelo de embedding escolhido para o MVP
 (``paraphrase-multilingual-mpnet-base-v2``) processa no máximo **128 tokens**
 por entrada. Em português, 1 token ≈ 4–5 caracteres, o que dá ~450–640 chars
-por chunk. O default conservador de 520 chars na UI mantém a maioria das
-sentenças dentro do limite sem truncagem silenciosa pelo modelo.
+por chunk. O padrão na UI é 720 caracteres com sobreposição de 150.
 
 A sobreposição (``overlap``) cria uma janela deslizante entre chunks consecutivos:
 o final do chunk N reaparece no início do chunk N+1. Isso preserva o contexto

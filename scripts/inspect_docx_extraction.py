@@ -104,8 +104,8 @@ def relatorio_arquivo(path: Path) -> None:
                 print(text[max(0, idx - 80) : idx + 320])
                 break
 
-    chunks = chunk_text(text, max_chars=520, overlap=80)
-    print(f"\nchunks gerados (max=520, overlap=80): {len(chunks)}")
+    chunks = chunk_text(text, max_chars=720, overlap=150)
+    print(f"\nchunks gerados (max=720, overlap=150): {len(chunks)}")
     for i, ch in enumerate(chunks):
         low = ch.lower()
         if "tampão" in low or "tampao" in low or "validade" in low:

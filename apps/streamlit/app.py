@@ -746,8 +746,8 @@ def _tab_documentos(root: Path, root_ok: bool, root_msg: str) -> None:
             stats = build_index(
                 scans,
                 project_ids=None,
-                max_chars=520,
-                overlap=80,
+                max_chars=720,
+                overlap=150,
                 max_doc_chars=2_000_000,
                 batch_size=64,
                 replace_existing=not index_ready(),
@@ -913,9 +913,9 @@ def _tab_indexacao_rag(scans: list[ProjectScan] | None) -> None:
             "Tamanho máx. do chunk (caracteres)",
             min_value=200,
             max_value=4000,
-            value=520,
+            value=720,
             step=20,
-            help="O modelo MPNet usa até ~128 tokens; ~520 caracteres é um valor seguro para pt-BR.",
+            help="O modelo MPNet usa até ~128 tokens; 720 caracteres é o padrão de indexação.",
             key="dev_rag_chunk_chars",
         )
     with c2:
@@ -923,7 +923,7 @@ def _tab_indexacao_rag(scans: list[ProjectScan] | None) -> None:
             "Sobreposição entre chunks",
             min_value=0,
             max_value=800,
-            value=80,
+            value=150,
             step=10,
             key="dev_rag_chunk_overlap",
         )
