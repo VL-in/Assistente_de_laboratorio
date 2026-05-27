@@ -72,7 +72,7 @@ Responda em português brasileiro, cordial e profissional.
 
 @dataclass
 class SynthesizerInput:
-    """Pacote pronto para o Synthesizer enviar ao LM Studio."""
+    """Pacote pronto para o Synthesizer enviar ao OpenRouter."""
 
     system_prompt: str
     messages: list[dict[str, str]]
@@ -85,6 +85,8 @@ def build_messages(
     history: list[dict],
     tool_results: dict[str, ToolResult],
     model_id: str,
+    max_history_turns: int | None = None,
+    max_chars_per_message: int | None = None,
 ) -> SynthesizerInput:
     """
     Monta ``messages`` para ``chat.completions.create`` no Synthesizer.
@@ -99,7 +101,14 @@ def build_messages(
 
     O ``user_message`` é gravado em ``messages`` apenas como o último turno; o
     chamador deve já ter incluído essa mensagem no ``history`` se quiser que
-    apareça no rerun do Streamlit (mantém compatibilidade com o app atual).
+    apareça no rerun do Streamlit.
+
+    Truncagem (opcional, single-source-of-truth):
+    - ``max_history_turns``: limite em pares user+assistant. ``None`` = sem
+      limite; ``0`` = histórico vazio (apenas o ``system_prompt``).
+    - ``max_chars_per_message``: corte por mensagem (com ``…`` no fim). ``None``
+      = não corta. Útil na rota ML para evitar inflar o prompt com respostas
+      longas anteriores.
     """
     used_ml = "ml" in tool_results and tool_results["ml"].ok
 
@@ -144,8 +153,14 @@ def build_messages(
 
     system_prompt = "\n\n".join(blocks)
 
+    trimmed_history = _trim_history(
+        history,
+        max_history_turns=max_history_turns,
+        max_chars_per_message=max_chars_per_message,
+    )
+
     api_messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
-    for m in history:
+    for m in trimmed_history:
         role = m.get("role", "user")
         content = str(m.get("content") or "")
         api_messages.append(
@@ -160,3 +175,37 @@ def build_messages(
         messages=api_messages,
         used_ml=used_ml,
     )
+
+
+def _trim_history(
+    messages: list[dict],
+    *,
+    max_history_turns: int | None,
+    max_chars_per_message: int | None,
+) -> list[dict]:
+    """
+    Aplica ``max_history_turns`` (pares user+assistant) e ``max_chars_per_message``.
+
+    Quando ambos são ``None``, retorna a lista original sem cópia. Quando
+    ``max_history_turns == 0``, retorna lista vazia (apenas system_prompt
+    será enviado).
+    """
+    if max_history_turns is None and max_chars_per_message is None:
+        return messages
+    if max_history_turns is not None and max_history_turns <= 0:
+        return []
+    if max_history_turns is not None:
+        max_msgs = max_history_turns * 2
+        trimmed = messages if len(messages) <= max_msgs else messages[-max_msgs:]
+    else:
+        trimmed = messages
+    if not max_chars_per_message or max_chars_per_message <= 0:
+        return list(trimmed)
+    out: list[dict] = []
+    for m in trimmed:
+        role = m.get("role", "user")
+        content = str(m.get("content") or "")
+        if len(content) > max_chars_per_message:
+            content = content[:max_chars_per_message] + "…"
+        out.append({"role": role, "content": content})
+    return out
