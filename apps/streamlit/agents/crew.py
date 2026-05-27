@@ -171,11 +171,22 @@ def _run_rag(ctx: CrewContext, trace: HandoffTrace) -> ToolResult:
         )
         h.set_output(result.summary or ("ok" if result.ok else (result.error or "")))
         hits = result.payload.get("hits") or []
+        evidence_files = [
+            {
+                "n": i,
+                "project_id": h_.get("project_id"),
+                "arquivo": h_.get("relative_path"),
+                "chunk": h_.get("chunk_index"),
+                "score": h_.get("score"),
+            }
+            for i, h_ in enumerate(hits, start=1)
+        ]
         h.set_metadata(
             ok=result.ok,
             top_k=ctx.rag_top_k,
             evidence_count=len(hits),
             project_ids=sorted(ctx.rag_project_ids) if ctx.rag_project_ids else None,
+            evidence_files=evidence_files,
         )
         if not result.ok:
             h.mark_failed(result.error or "rag_tool falhou")

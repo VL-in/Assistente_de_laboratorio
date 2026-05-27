@@ -768,6 +768,22 @@ def filter_hits_by_project(
     return filtered
 
 
+# Campos customizados que ``rows_for_file`` grava em cada chunk e que precisamos
+# devolver junto com a busca para que o LLM possa citar projeto/arquivo. A busca
+# semântica padrão do txtai (``emb.search(q, k)``) só retorna ``id``/``text``/``score``
+# mesmo com ``content=True``; para trazer colunas customizadas é preciso usar a
+# sintaxe SQL do txtai (``select … from txtai where similar(:q)``).
+_RAG_SQL_COLUMNS: tuple[str, ...] = (
+    "id",
+    "text",
+    "score",
+    "project_id",
+    "relative_path",
+    "chunk_index",
+    "cited",
+)
+
+
 def search_with_backend(
     backend: object,
     query: str,
@@ -784,24 +800,95 @@ def search_with_backend(
 
     Quando ``project_ids`` é informado, busca ``limit * 3`` candidatos e filtra
     por projeto antes de truncar — compensa hits de outros projetos no top-K bruto.
+
+    Implementação
+    -------------
+    Preferimos a forma SQL do txtai (``select <cols> from txtai where similar(:q)
+    limit :k``) porque a busca semântica padrão (``backend.search(q, k)``)
+    devolve apenas ``id``/``text``/``score`` mesmo com ``content=True`` — perdendo
+    os campos customizados (``project_id``, ``relative_path``, ``chunk_index``,
+    ``cited``) que são essenciais para o LLM citar projeto/arquivo na resposta.
+
+    Caso a query SQL falhe (índice antigo sem alguma coluna, versão do txtai
+    incompatível, etc.), caímos no ``backend.search(q, k)`` simples — o
+    ``format_context_for_llm`` é defensivo o suficiente para extrair Projeto e
+    Arquivo via regex do prefixo ``[Projeto: …] [Arquivo: …]`` embutido no
+    ``text``/``cited``.
     """
     q = (query or "").strip()
     if not q:
         return []
     fetch_limit = limit * 3 if project_ids else limit
-    hits = format_search_results(backend.search(q, fetch_limit))  # type: ignore[attr-defined]
+
+    sql = (
+        f"select {', '.join(_RAG_SQL_COLUMNS)} "
+        f"from txtai where similar(:query) limit {int(fetch_limit)}"
+    )
+    try:
+        raw = backend.search(sql, parameters={"query": q})  # type: ignore[attr-defined]
+        hits = format_search_results(raw)
+    except Exception:
+        # Fallback: índice antigo sem alguma coluna, txtai sem suporte a
+        # parameters, etc. A versão simples preserva o comportamento legado.
+        hits = format_search_results(backend.search(q, fetch_limit))  # type: ignore[attr-defined]
+
     hits = filter_hits_by_project(hits, project_ids)
     return hits[:limit]
 
 
 # ── Formatação de contexto para o LLM ───────────────────────────────────────
 
+# Regex de fallback para extrair Projeto/Arquivo do prefixo ``[Projeto: …]
+# [Arquivo: …]`` quando o hit não vem com os campos estruturados (índice antigo
+# ou backend que devolve apenas ``text``/``score``).
+_PROJECT_RE = re.compile(r"\[Projeto:\s*([^\]]+)\]")
+_FILE_RE = re.compile(r"\[Arquivo:\s*([^\]]+)\]")
+
+
+def _hit_project_and_file(h: dict) -> tuple[str, str]:
+    """
+    Devolve ``(project_id, relative_path)`` de um hit, com fallback via regex.
+
+    Preferimos os campos estruturados ``project_id``/``relative_path`` quando
+    presentes. Caso venham vazios (cenário comum em ``backend.search(q, k)``
+    sem SQL), tentamos extrair do prefixo embutido no ``cited``/``text``.
+    """
+    project_id = str(h.get("project_id") or "").strip()
+    relative_path = str(h.get("relative_path") or "").strip()
+    if project_id and relative_path:
+        return project_id, relative_path
+    body = h.get("cited") or h.get("text") or ""
+    if not project_id:
+        m = _PROJECT_RE.search(body)
+        if m:
+            project_id = m.group(1).strip()
+    if not relative_path:
+        m = _FILE_RE.search(body)
+        if m:
+            relative_path = m.group(1).strip()
+    return project_id, relative_path
+
+
 def format_context_for_llm(hits: list[dict], *, max_chars: int = 12000) -> str:
     """
     Monta o bloco de contexto citável a ser injetado no system prompt do chat.
 
-    Cada hit vira uma seção ``### Evidência [N]`` com o texto do chunk (que já
-    traz o prefixo ``[Projeto: ...] [Arquivo: ...]`` embutido em ``rows_for_file``).
+    Cada hit vira uma seção cujo cabeçalho carrega explicitamente o ``project_id``
+    e o ``relative_path`` do arquivo de origem, no formato:
+
+        ### Evidência [N] — Projeto: <project_id> · Arquivo: <relative_path>
+
+    Esse cabeçalho enriquecido é essencial para auditoria: incentiva o LLM a
+    citar o nome do arquivo (e não apenas ``[N]``) na resposta final, já que o
+    rótulo visível da evidência passa a conter o caminho legível. O corpo do
+    bloco continua trazendo o prefixo ``[Projeto: ...] [Arquivo: ...] [Chunk N]``
+    embutido em ``rows_for_file`` (redundância proposital — reforça a citação).
+
+    Defensivo: se ``project_id``/``relative_path`` vierem ausentes no hit
+    (ex.: índice antigo ou backend devolveu apenas ``text``/``score``),
+    ``_hit_project_and_file`` extrai os valores via regex no próprio body.
+    Assim, o cabeçalho da evidência *sempre* leva o nome do arquivo quando a
+    informação estiver minimamente disponível.
 
     O limite de ``max_chars`` (padrão 12 000) garante que o contexto não
     ultrapasse uma fração razoável da janela de contexto do LLM. Quando
@@ -816,7 +903,17 @@ def format_context_for_llm(hits: list[dict], *, max_chars: int = 12000) -> str:
         body = (h.get("cited") or h.get("text") or "").strip()
         if not body:
             continue
-        block = f"### Evidência [{i}]\n{body}\n\n"
+        project_id, relative_path = _hit_project_and_file(h)
+        header_parts = [f"### Evidência [{i}]"]
+        meta_parts: list[str] = []
+        if project_id:
+            meta_parts.append(f"Projeto: {project_id}")
+        if relative_path:
+            meta_parts.append(f"Arquivo: {relative_path}")
+        if meta_parts:
+            header_parts.append("— " + " · ".join(meta_parts))
+        header = " ".join(header_parts)
+        block = f"{header}\n{body}\n\n"
         if used + len(block) > max_chars:
             lines.append(f"(… contexto truncado em {max_chars} caracteres …)")
             break

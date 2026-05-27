@@ -1,11 +1,21 @@
 """
-Parâmetros de inferência alinhados ao Qwen3.5 / Qwen3.5-MTP (Unsloth GGUF).
+Perfis de inferência usados nas chamadas ao LLM remoto (OpenRouter).
 
-Referência: https://huggingface.co/unsloth/Qwen3.5-9B-MTP-GGUF
-- Modo thinking (padrão do modelo): blocos ``<think>`` antes da resposta.
-- Modo instruct: ``enable_thinking=False`` via ``chat_template_kwargs`` (recomendado para
-  assistente documental e geração de SQL).
-- Sampling: tabelas "Best Practices" e "Instruct mode" do model card Qwen3.5.
+O nome do módulo segue mantido porque os parâmetros originais foram derivados
+do model card do Qwen3.5 — ainda úteis quando o ``LLM_MODEL`` aponta para
+``qwen/qwen3.5-...`` no OpenRouter. Para outros modelos (Llama, Mistral,
+Gemma, etc.), o ``select_chat_profile`` devolve um perfil neutro e os campos
+específicos do Qwen (``extra_body.chat_template_kwargs``) **não** são enviados,
+evitando erros em providers que não reconhecem o template.
+
+Resumo dos perfis exportados:
+- ``PROFILE_CHAT_INSTRUCT`` — chat geral (instruct, sem raciocínio).
+- ``PROFILE_CHAT_THINKING`` — chat com raciocínio explícito (Qwen3.5 only).
+- ``PROFILE_OLAP_SQL`` — geração de SQL DuckDB (temperatura baixa).
+- ``PROFILE_CHAT_ROUTER`` — classificador JSON do roteador de intenção.
+
+Referência Qwen3.5: https://huggingface.co/unsloth/Qwen3.5-9B-MTP-GGUF
+Documentação OpenRouter: https://openrouter.ai/docs
 """
 
 from __future__ import annotations
@@ -15,8 +25,8 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-# Resposta do chat — alinhado a janela ~4096 no LM Studio (prompt + saída).
-# Predição ML: resposta curta (tabela já veio no system); evita estourar contexto.
+# Resposta do chat — limites conservadores para conter custo no OpenRouter
+# (prompt + saída). Predição ML: resposta curta (tabela já veio no system).
 DEFAULT_CHAT_MAX_TOKENS = 2048
 DEFAULT_CHAT_ML_MAX_TOKENS = 768
 DEFAULT_CHAT_MAX_HISTORY_TURNS = 4
@@ -289,8 +299,11 @@ def create_chat_completion(
     stream: bool = False,
 ) -> Any:
     """
-    Chama a API com perfil Qwen3.5; se ``extra_body`` falhar (LM Studio antigo),
-    repete sem parâmetros específicos do template.
+    Chama a API OpenAI-compatível (OpenRouter, OpenAI, vLLM, etc.).
+
+    Quando o modelo é Qwen3.5, anexamos ``extra_body`` com
+    ``chat_template_kwargs.enable_thinking`` — se o provider não aceitar (alguns
+    serviços recusam o campo), repetimos a chamada sem ele.
     """
     kwargs = build_completion_kwargs(
         model=model,

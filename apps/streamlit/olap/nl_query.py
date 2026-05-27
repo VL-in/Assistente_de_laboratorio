@@ -1,7 +1,8 @@
 """
 Consultas em linguagem natural → SQL read-only → execução DuckDB.
 
-O LLM (LM Studio) gera apenas ``SELECT``; o resultado entra no contexto do chat.
+O LLM remoto (OpenRouter) gera apenas ``SELECT``; o resultado entra no contexto
+do chat.
 """
 
 from __future__ import annotations
@@ -279,8 +280,8 @@ def generate_sql(
 
     if not raw:
         return None, (
-            "O LLM retornou resposta vazia. Verifique se o modelo está carregado no "
-            "LM Studio e se a aba **Diagnóstico → Testar GET /v1/models** lista o modelo."
+            "O LLM retornou resposta vazia. Verifique a chave `OPENROUTER_API_KEY` "
+            "no `.env` e teste em **Desenvolvimento → Diagnóstico → Testar GET /v1/models**."
         ), raw
 
     sql, truncated = _extract_sql(raw)

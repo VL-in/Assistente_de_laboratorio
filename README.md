@@ -1,6 +1,6 @@
 # Assistente de lab
 
-Aplicação web **MVP offline-first** para apoiar P&D com documentos locais, **RAG** (txtai + embeddings multilíngues), **OLAP** (DuckDB), **ML tradicional** (FLAML + Kaggle AbRank) e geração via **LM Studio** no host. A UI e o pipeline Python rodam **no Docker**; dados sensíveis e o modelo de linguagem ficam na sua máquina.
+Aplicação web **MVP offline-first** para apoiar P&D com documentos locais, **RAG** (txtai + embeddings multilíngues), **OLAP** (DuckDB), **ML tradicional** (FLAML + Kaggle AbRank) e geração via **OpenRouter** (API compatível com OpenAI). A UI e o pipeline Python rodam **no Docker**; dados sensíveis ficam na sua máquina e o LLM é consultado por API remota — o que tira a carga de hardware do PC local.
 
 | Documento | Função |
 |-----------|--------|
@@ -13,17 +13,19 @@ Aplicação web **MVP offline-first** para apoiar P&D com documentos locais, **R
 
 ```
 Assistente_de_lab/
-├── docker-compose.yml          # Orquestração: Streamlit + volumes + rede ao host
+├── docker-compose.yml          # Orquestração: Streamlit + volumes
 ├── docker/streamlit/Dockerfile # Imagem da app (usuário não-root, HEALTHCHECK HTTP)
 ├── .env.docker.example         # Modelo de `.env` (segredos ficam só no `.env`)
 ├── apps/streamlit/
 │   ├── app.py                  # UI: Conversa, Documentos, ML tradicional, Desenvolvimento
 │   ├── chat_router.py          # Roteador: documentos vs planilhas por mensagem
 │   ├── projects_loader.py      # Inventário: um subdiretório de 1º nível = projeto
-│   ├── qwen35_inference.py     # Parâmetros Qwen3.5 / strip de thinking
+│   ├── llm_config.py           # Defaults do LLM (OpenRouter) + resolver de chave
+│   ├── qwen35_inference.py     # Perfis de sampling (Qwen3.5 ↔ outros) + strip de thinking
 │   ├── olap/                   # DuckDB: ingestão, NL→SQL, catálogo
 │   ├── ml/                     # ML tradicional: FLAML, catálogo de colunas, .pkl
 │   ├── rag/                    # Extração, chunking, índice txtai (upsert em lotes)
+│   ├── agents/                 # Sistema multiagentes (CrewAI local)
 │   └── requirements.txt
 ```
 
@@ -33,13 +35,15 @@ Assistente_de_lab/
 
 ## Guia rápido (primeira execução)
 
-Siga esta ordem para subir a aplicação sem erros de rede, LLM ou RAG.
+Siga esta ordem para subir a aplicação sem erros de chave de API, rede ou RAG.
 
 ### 1. Pré-requisitos
 
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/) (Windows/macOS) ou Docker Engine + Compose v2 (Linux)
-- [LM Studio](https://lmstudio.ai/) com um modelo de chat carregado e o **servidor local** ativo (porta padrão **1234**)
+- Conta no [OpenRouter](https://openrouter.ai/) com **chave de API** ativa (https://openrouter.ai/settings/keys)
 - Uma pasta de projetos no host, com **um subdiretório por projeto** e documentos (`.docx`, `.xlsx`, `.pdf`, `.txt`, `.md`, `.csv`)
+
+> **Por que OpenRouter?** Ele expõe centenas de modelos (incluindo os **gratuitos** via `openrouter/free`) através de uma única API compatível com OpenAI. Isso elimina a necessidade de hospedar o LLM localmente e libera o hardware da sua máquina. O custo dos modelos pagos aparece no seu painel da conta; os modelos `:free` são gratuitos com limites de requisição.
 
 ### 2. Configurar `.env`
 
@@ -54,9 +58,10 @@ Edite o `.env` (nunca commite este arquivo):
 | Variável | Obrigatório | O que preencher |
 |----------|-------------|-----------------|
 | `PROJETOS_HOST_DIR` | Sim | Caminho **absoluto** no host da pasta que contém os projetos (ex.: `D:/Vanessa/AI_project/Projetos`) |
-| `LLM_BASE_URL` | Sim | URL do LM Studio **acessível de dentro do contêiner** (veja [LM Studio](#lm-studio-no-docker)) |
-| `LLM_MODEL` | Sim | ID **exato** do modelo na aba Server do LM Studio (ex.: `qwen3.5-9b-mtp`) |
-| `OPENAI_API_KEY` | Recomendado | Valor dummy, ex.: `lm-studio` |
+| `OPENROUTER_API_KEY` | **Sim** | Chave gerada em https://openrouter.ai/settings/keys (começa com `sk-or-v1-...`) |
+| `LLM_MODEL` | Não | Slug do modelo (padrão `openrouter/auto`). Veja [modelos](#escolha-do-modelo) |
+| `LLM_BASE_URL` | Não | Padrão `https://openrouter.ai/api/v1` |
+| `OPENROUTER_APP_TITLE` | Não | Nome que aparece nos rankings do OpenRouter |
 | `STREAMLIT_PORT` | Não | Padrão `8502` |
 
 ### 3. Subir a aplicação
@@ -81,7 +86,7 @@ docker compose up -d --build
 
 ### 4. Validar na interface
 
-1. **Desenvolvimento → Diagnóstico** — confirme pasta de projetos e clique em **Testar GET /v1/models** (LM Studio deve responder).
+1. **Desenvolvimento → Diagnóstico** — confirme que a chave da API aparece como **configurada** e clique em **Testar GET /v1/models** (o OpenRouter deve responder).
 2. **Documentos** — informe a raiz (ou use a do `.env`) e **Escanear pastas**.
 3. **Documentos** — **Atualizar base agora** (primeira vez ou após mudanças nos arquivos).
 4. **Desenvolvimento → Busca semântica** — valide recuperação de trechos.
@@ -114,55 +119,61 @@ O serviço usa `restart: unless-stopped` e `PYTHONUNBUFFERED=1` para logs mais i
 | `STREAMLIT_PORT` | Host | Porta publicada (padrão **8502**). Mapeamento: `HOST:8502→8502`. |
 | `ASSISTENTE_PROJETOS_DIR` | Contêiner | Definido no Compose como `/data/projetos` (não precisa alterar). |
 | `ASSISTENTE_TXTAI_DIR` | Contêiner | Volume persistente do índice txtai (`/data/txtai`). |
-| `LLM_BASE_URL` | Contêiner | Base OpenAI-compatível do LM Studio. Pode omitir o sufixo `/v1`; o app adiciona automaticamente. |
-| `LLM_MODEL` | Contêiner | ID exato do modelo carregado no LM Studio. |
-| `OPENAI_API_KEY` | Contêiner | Valor dummy aceito pelo LM Studio na maioria dos setups. |
+| `LLM_BASE_URL` | Contêiner | Endpoint OpenAI-compatível. Padrão: `https://openrouter.ai/api/v1`. |
+| `LLM_MODEL` | Contêiner | Slug do modelo no catálogo OpenRouter. |
+| `OPENROUTER_API_KEY` | Contêiner | Chave de API real do OpenRouter. |
+| `OPENROUTER_APP_TITLE` | Contêiner | Título exibido nos rankings (opcional). |
+| `OPENROUTER_HTTP_REFERER` | Contêiner | URL exibida nos rankings (opcional). |
 
-### LM Studio no Docker
+### OpenRouter
 
-O contêiner **não** roda o LM Studio; ele só se conecta ao servidor no **host** ou na **rede local**. A URL em `LLM_BASE_URL` precisa funcionar **de dentro do contêiner**, não apenas no navegador do PC.
+O OpenRouter é uma API agregadora compatível com OpenAI: você usa **uma chave** e tem acesso a centenas de modelos diferentes (OpenAI, Anthropic, Meta, Mistral, Google, Qwen, etc.). O endpoint padrão é `https://openrouter.ai/api/v1`.
 
-| Cenário | Exemplo de `LLM_BASE_URL` | Observação |
-|---------|---------------------------|------------|
-| Docker Desktop (Windows/macOS), LM Studio no mesmo PC | `http://host.docker.internal:1234` | Opção mais simples no Desktop |
-| LM Studio em outro PC na rede (IP fixo) | `http://192.168.15.7:1234` | Use o IP real da máquina que hospeda o LM Studio |
-| IP do host visto pelo Docker (WSL2 / rede virtual) | `http://172.x.x.x:1234` | Só use se `curl` **de dentro do contêiner** responder |
+**Como obter a chave:**
 
-**Como testar se a URL está correta** (substitua pela sua URL):
+1. Crie conta gratuita em https://openrouter.ai.
+2. Vá em **Settings → Keys** (https://openrouter.ai/settings/keys).
+3. Clique em **Create Key**, copie o valor e cole em `OPENROUTER_API_KEY` no `.env`.
+
+**Testar a chave de dentro do contêiner:**
 
 ```bash
 docker exec assistente-lab-streamlit python -c "
 import json, os, urllib.request
-base = os.environ['LLM_BASE_URL'].rstrip('/')
-if not base.endswith('/v1'): base += '/v1'
-with urllib.request.urlopen(base + '/models', timeout=10) as r:
-    print(json.loads(r.read().decode())['data'][0]['id'])
+key = os.environ['OPENROUTER_API_KEY']
+req = urllib.request.Request(
+    'https://openrouter.ai/api/v1/models',
+    headers={'Authorization': f'Bearer {key}'},
+)
+with urllib.request.urlopen(req, timeout=10) as r:
+    data = json.loads(r.read().decode())
+    print('Modelos disponíveis:', len(data.get('data', [])))
 "
 ```
 
-Se aparecer o nome do modelo, o chat na UI deve funcionar. Se der timeout ou *No route to host*, troque `LLM_BASE_URL`, salve o `.env` e rode `docker compose up -d --build` de novo.
+Se a chamada listar modelos, o chat na UI deve funcionar. Se aparecer **HTTP 401**, a chave está errada ou ausente; em caso de **timeout**, verifique a conexão do contêiner com a internet.
 
-No LM Studio: aba **Server** → ative o servidor local → carregue o modelo → copie o **ID** para `LLM_MODEL`.
+### Escolha do modelo
 
-### Qwen3.5-9B-MTP (Unsloth GGUF)
+O `LLM_MODEL` aceita qualquer slug listado em https://openrouter.ai/models. Para começar, recomendamos:
 
-Modelo padrão do MVP: [`unsloth/Qwen3.5-9B-MTP-GGUF`](https://huggingface.co/unsloth/Qwen3.5-9B-MTP-GGUF). O Streamlit aplica os parâmetros recomendados no model card:
+| Slug | Quando usar | Custo |
+|------|-------------|-------|
+| `openrouter/auto` | Padrão — o roteador escolhe o melhor modelo para cada requisição. | Mesmo do modelo selecionado |
+| `openrouter/free` | Sorteia entre modelos **gratuitos** disponíveis. | **Grátis** (limites por minuto/dia) |
+| `meta-llama/llama-3.3-70b-instruct:free` | Modelo grande e multilíngue, bom para PT-BR. | **Grátis** |
+| `qwen/qwen3.5-7b-instruct:free` | Qwen3.5 — a app ainda usa os perfis Qwen quando esse slug é detectado. | **Grátis** |
+| `anthropic/claude-3.5-sonnet` | Alta qualidade para síntese complexa. | Pago |
 
-| Modo | Uso no app | Parâmetros (resumo) |
-|------|------------|---------------------|
-| **Instruct** (padrão) | Chat + RAG + documentos | `enable_thinking=false`, `temperature=0.7`, `top_p=0.8` |
-| **Thinking** | Toggle na aba Chat | `enable_thinking=true`, `temperature=1.0`, `top_p=0.95` |
-| **SQL OLAP** | Geração de `SELECT` | `enable_thinking=false`, `temperature=0.6` (tarefa precisa) |
+> Os perfis de sampling (`PROFILE_CHAT_INSTRUCT`, `PROFILE_OLAP_SQL` etc.) em `apps/streamlit/qwen35_inference.py` continuam aplicando os parâmetros validados do Qwen3.5 apenas quando o slug contém `qwen3.5`. Outros modelos recebem um perfil neutro (sem `extra_body.chat_template_kwargs`).
 
 Variáveis opcionais no `.env`:
 
 | Variável | Efeito |
 |----------|--------|
-| `LLM_ENABLE_THINKING=1` | Liga o toggle **Modo raciocínio** por padrão |
-
-**Desempenho MTP no LM Studio / llama.cpp:** use build com suporte a *draft MTP* e carregue o GGUF MTP; a documentação Unsloth cita `--spec-type draft-mtp --spec-draft-n-max 6` no `llama-server` para ~1,5–2× mais velocidade na geração (configuração do servidor, não do app).
-
-Implementação no código: `apps/streamlit/qwen35_inference.py`.
+| `LLM_ENABLE_THINKING=1` | Liga o toggle **Modo raciocínio** por padrão (só faz efeito com Qwen3.5). |
+| `LLM_TIMEOUT_S=120` | Timeout das chamadas ao OpenRouter (segundos). Aumente em redes lentas. |
+| `CHAT_MAX_TOKENS=2048` | Limite de tokens de saída no chat. |
 
 ### Volumes dentro do contêiner
 
@@ -192,9 +203,9 @@ Esperado: **HTTP 200**. Logs: `docker compose logs streamlit --tail 50`.
 
 ---
 
-## Sistema multiagentes (CrewAI local)
+## Sistema multiagentes (CrewAI)
 
-Pipeline opcional para orquestrar o chat em agentes especializados rodando inteiramente offline. Ativado por `USE_CREWAI=1` no `.env`.
+Pipeline opcional para orquestrar o chat em agentes especializados. Ativado por `USE_CREWAI=1` no `.env`. Continua usando o OpenRouter como provedor do LLM.
 
 ```
 Mensagem → Greeter (rule-based) → Triage Agent → Tools (RAG, OLAP, ML em paralelo) → Synthesizer Agent → Resposta
@@ -269,15 +280,13 @@ python -m venv .venv
 .\.venv\Scripts\activate
 pip install -r requirements.txt
 $env:ASSISTENTE_PROJETOS_DIR="D:\caminho\Projetos"
-$env:LLM_BASE_URL="http://192.168.15.7:1234"
-$env:LLM_MODEL="qwen3.5-9b-mtp"
-$env:OPENAI_API_KEY="lm-studio"
+$env:OPENROUTER_API_KEY="sk-or-v1-sua-chave-aqui"
+# (opcional) escolher um modelo específico:
+# $env:LLM_MODEL="openrouter/free"
 streamlit run app.py --server.port 8502
 ```
 
 Fora do Docker, se `ASSISTENTE_PROJETOS_DIR` não estiver definida, o loader usa um fallback Windows em `projects_loader.py` (em outros SO, defina a variável).
-
-LM Studio em `127.0.0.1:1234` funciona no modo local; no Docker use `host.docker.internal` ou o IP da rede conforme a tabela acima.
 
 ---
 
@@ -286,8 +295,10 @@ LM Studio em `127.0.0.1:1234` funciona no modo local; no Docker use `host.docker
 | Sintoma | Causa provável | O que fazer |
 |---------|----------------|-------------|
 | Pasta vazia ou “Caminho não existe” | `PROJETOS_HOST_DIR` incorreto | Caminho absoluto real no host; um subdiretório por projeto |
-| **LM Studio inalcançável** no Diagnóstico | Servidor desligado, firewall ou URL que não funciona **no contêiner** | Teste com `docker exec` (seção [LM Studio](#lm-studio-no-docker)); prefira `host.docker.internal` ou IP LAN (`192.168.x.x`) |
-| Chat sem resposta / erro de conexão | `LLM_MODEL` diferente do ID no LM Studio | Copie o ID exato da aba Server |
+| **HTTP 401 no chat** | `OPENROUTER_API_KEY` ausente ou inválida | Verifique o `.env`, recrie a chave em https://openrouter.ai/settings/keys e rode `docker compose up -d --build` |
+| **HTTP 402 / saldo insuficiente** | Modelo pago sem créditos na conta | Troque para `openrouter/free` no `LLM_MODEL` ou adicione créditos no painel do OpenRouter |
+| **HTTP 429 (rate limit)** | Limite de requisições do plano gratuito atingido | Aguarde alguns minutos; reduza o número de chamadas paralelas (`CREW_PARALLEL_TOOLS=0`) |
+| Chat sem resposta / timeout | Conexão do contêiner com a internet | Teste `docker exec assistente-lab-streamlit curl -sI https://openrouter.ai/api/v1/models`; aumente `LLM_TIMEOUT_S` |
 | Inventário vazio | Sem subpastas na raiz ou extensões filtradas | Ajuste filtro na barra lateral; confira extensões dos arquivos |
 | **RAG não retorna documentos esperados** | Índice não construído ou desatualizado | Escaneie → **Indexação RAG** → *Substituir índice* → reconstrua |
 | Busca só mostra planilhas grandes | Projeto com muitos chunks de xlsx domina o top‑K | Normal em MVP; refine a pergunta ou use **Teste RAG** com mais trechos |
@@ -302,6 +313,7 @@ LM Studio em `127.0.0.1:1234` funciona no modo local; no Docker use `host.docker
 |-------------|------------|
 | UI, inventário, abas | `apps/streamlit/app.py` |
 | Chat + RAG no prompt | `apps/streamlit/app.py` (`rag_semantic_search`, `format_context_for_llm`) |
+| Configuração do LLM (defaults, chave) | `apps/streamlit/llm_config.py` |
 | Extração, chunking, índice, busca | `apps/streamlit/rag/` |
 | Scan de projetos | `apps/streamlit/projects_loader.py` |
 | Imagem e healthcheck | `docker/streamlit/Dockerfile` |

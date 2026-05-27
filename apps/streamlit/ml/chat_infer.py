@@ -395,7 +395,7 @@ def run_chat_ml_inference(
     history:
         Mensagens anteriores para desambiguar valores citados antes.
     client, model:
-        Cliente OpenAI (LM Studio) para extração estruturada.
+        Cliente OpenAI apontando para o OpenRouter (extração estruturada).
     bundle:
         Modelo já carregado (opcional; evita releitura do .pkl).
     model_path:

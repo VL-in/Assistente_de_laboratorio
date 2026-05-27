@@ -149,12 +149,48 @@ def _iter_hdr_ftr_blocks(header_footer: object):
     yield from _walk_block_container(header_footer._element, header_footer)  # type: ignore[attr-defined]
 
 
+def _normalize_cell_text(text: str) -> str:
+    """
+    Normaliza o texto de uma célula para uso em pareamentos ``coluna: valor``.
+
+    Operações
+    ---------
+    1. Quebras de linha internas (``\\n``/``\\r``) viram ``"; "`` para a
+       célula caber em uma única linha do extrato — preservando o pareamento
+       coluna-valor mesmo quando a original tinha múltiplos itens
+       (ex.: ``"EQA0506; EQA0982"`` em colunas de equipamento).
+    2. Tokens duplicados consecutivos (após ``split(";")``) são deduplicados.
+       Isso elimina ruído típico de células ancorando ``<w:vMerge>``, onde
+       ``python-docx`` repete o conteúdo da âncora para cada linha mesclada
+       (ex.: ``"NA; NA; NA"`` vira ``"NA"``).
+    3. Separadores vazios (``";; "``) são colapsados em ``"; "``.
+    """
+    if not text:
+        return ""
+    cleaned = text.replace("\r\n", "\n").replace("\r", "\n")
+    parts = [p.strip().rstrip(";").strip() for p in cleaned.split("\n")]
+    parts = [p for p in parts if p]
+
+    deduped: list[str] = []
+    for p in parts:
+        if not deduped or deduped[-1] != p:
+            deduped.append(p)
+
+    # Se todos os tokens forem idênticos (caso da vMerge âncora), mantém só um.
+    if deduped and all(p == deduped[0] for p in deduped):
+        deduped = [deduped[0]]
+
+    return "; ".join(deduped)
+
+
 def _cell_to_text(cell: object) -> str:
     """
     Texto de uma célula, incluindo parágrafos e tabelas aninhadas.
 
     ``cell.text`` do python-docx omite tabelas aninhadas; percorrer os blocos
-    da célula garante que sub-tabelas de insumos entrem na indexação.
+    da célula garante que sub-tabelas de insumos entrem na indexação. O
+    resultado passa por ``_normalize_cell_text`` para colapsar quebras de
+    linha internas em ``"; "``, evitando "linhas-fantasma" no extrato final.
     """
     from docx.table import Table
     from docx.text.paragraph import Paragraph
@@ -169,10 +205,51 @@ def _cell_to_text(cell: object) -> str:
             for line in _table_to_lines(block):
                 pieces.append(line.replace("\t", " | "))
     if not pieces:
-        t = (cell.text or "").strip().replace("\n", " ")  # type: ignore[attr-defined]
+        t = (cell.text or "").strip()  # type: ignore[attr-defined]
         if t:
             pieces.append(t)
-    return " | ".join(pieces)
+    return _normalize_cell_text(" | ".join(pieces))
+
+
+def _cell_vmerge_state(cell: object) -> str | None:
+    """
+    Lê ``<w:vMerge>`` de uma célula e devolve seu estado.
+
+    Retornos
+    --------
+    ``"restart"`` — célula é a âncora de uma mescla vertical (tem conteúdo).
+    ``"continue"`` — célula é continuação de uma mescla vertical iniciada
+        em linha anterior; nesse caso ``cell.text`` do python-docx repete o
+        conteúdo da âncora, o que gera "linhas-fantasma" no extrato se a
+        linha inteira for de continuação. Detectar permite pular a linha.
+    ``None`` — célula sem mescla vertical.
+    """
+    from docx.oxml.ns import qn
+
+    tcPr = cell._tc.find(qn("w:tcPr"))  # type: ignore[attr-defined]
+    if tcPr is None:
+        return None
+    vMerge = tcPr.find(qn("w:vMerge"))
+    if vMerge is None:
+        return None
+    val = vMerge.get(qn("w:val"))
+    return "restart" if val == "restart" else "continue"
+
+
+def _row_is_all_vmerge_continue(row: object) -> bool:
+    """
+    Indica se a linha é composta SÓ por células de continuação vertical.
+
+    Linhas assim não trazem informação nova (são continuação visual da
+    linha-âncora acima) e, se incluídas no extrato, viram pareamentos
+    repetidos ou linhas com cara de ``"NA NA NA"`` que confundem o LLM.
+    """
+    has_cell = False
+    for cell in row.cells:  # type: ignore[attr-defined]
+        has_cell = True
+        if _cell_vmerge_state(cell) != "continue":
+            return False
+    return has_cell
 
 
 def _table_row_cell_texts(row: object) -> list[str]:
@@ -196,14 +273,123 @@ def _table_row_cell_texts(row: object) -> list[str]:
 
 
 def _table_to_lines(table: object) -> list[str]:
-    """Serializa uma tabela Word em linhas de texto separadas por tabulação."""
+    """Serializa uma tabela Word em linhas TSV (fallback legado).
+
+    Mantida para serialização de tabelas aninhadas dentro de células (onde o
+    formato ``coluna: valor`` por reagente seria confuso). O caminho principal
+    do extrator passa por :func:`_table_to_records` /
+    :func:`_serialize_table_as_records`.
+    """
     lines: list[str] = []
     for row in table.rows:  # type: ignore[attr-defined]
+        if _row_is_all_vmerge_continue(row):
+            continue
         cells = _table_row_cell_texts(row)
         line = "\t".join(cells).strip()
         if line:
             lines.append(line)
     return lines
+
+
+def _table_to_records(table: object) -> list[dict[str, str]]:
+    """
+    Detecta o cabeçalho (1ª linha) e retorna ``[{coluna: valor, ...}]`` por linha.
+
+    A 1ª linha da tabela é tratada como header. Linhas de continuação vertical
+    (``<w:vMerge>`` sem ``val="restart"``) são puladas — elas geram entradas
+    redundantes (cell.text repete o conteúdo da linha-âncora) e poluem o
+    extrato.
+
+    Quando a tabela tem menos de 2 linhas ou o header é totalmente vazio,
+    devolve lista vazia; o chamador faz fallback para o formato TSV legado.
+    """
+    rows = list(table.rows)  # type: ignore[attr-defined]
+    if len(rows) < 2:
+        return []
+
+    header_cells = _table_row_cell_texts(rows[0])
+    if not any(c.strip() for c in header_cells):
+        return []
+
+    headers = [c.strip() or f"Coluna{i + 1}" for i, c in enumerate(header_cells)]
+
+    records: list[dict[str, str]] = []
+    for row in rows[1:]:
+        if _row_is_all_vmerge_continue(row):
+            continue
+        cells = _table_row_cell_texts(row)
+        if not any(c.strip() for c in cells):
+            continue
+        # Normaliza tamanho: completa com vazio ou trunca à largura do header
+        if len(cells) < len(headers):
+            cells = cells + [""] * (len(headers) - len(cells))
+        elif len(cells) > len(headers):
+            cells = cells[: len(headers)]
+        records.append({h: cells[i].strip() for i, h in enumerate(headers)})
+
+    return records
+
+
+def _serialize_table_as_records(
+    table: object,
+    *,
+    title: str,
+) -> list[str]:
+    """
+    Serializa cada linha da tabela como um item auto-contido ``coluna: valor``.
+
+    Por que esse formato?
+    ---------------------
+    O extrator antigo emitia uma linha TSV por reagente, com o header da
+    tabela só na 1ª linha. O ``chunk_text`` (limite ~520 chars) cortava
+    tabelas longas no meio, e os chunks subsequentes ficavam sem o header
+    — o LLM precisava adivinhar qual coluna era qual. Isso causava respostas
+    erradas em perguntas do tipo "qual a validade do X?".
+
+    Aqui, cada linha do extrato carrega TODOS os pareamentos
+    (``Reagente: X · Fabricante/Código: Y · Lote/ativo: Z · Validade: W``).
+    Mesmo que o RAG recupere um chunk com apenas 1 item, o pareamento
+    coluna-valor está completo — não é necessário "lembrar" o header.
+
+    Cai no formato TSV de ``_table_to_lines`` se a tabela não tiver header
+    detectável (tabela de 1 linha, layout só visual, etc.).
+    """
+    records = _table_to_records(table)
+    if not records:
+        # Fallback: tabela sem header claro → mantém TSV puro para não perder dados.
+        legacy = _table_to_lines(table)
+        if not legacy:
+            return []
+        return [f"### {title}", *legacy]
+
+    columns = list(records[0].keys())
+    lines: list[str] = [f"### {title}", "Colunas: " + " · ".join(columns)]
+    for i, rec in enumerate(records, start=1):
+        parts: list[str] = []
+        for col in columns:
+            val = (rec.get(col) or "").strip()
+            parts.append(f"{col}: {val if val else '(em branco)'}")
+        lines.append(f"Item {i} — " + " · ".join(parts))
+    return lines
+
+
+def _infer_table_title(prev_paragraph: str) -> str:
+    """
+    Usa o último parágrafo não vazio antes da tabela como título, quando ele
+    parece um cabeçalho de seção.
+
+    Heurística conservadora: aceita parágrafos curtos (< 120 chars) e sem
+    pontuação pesada (no máximo 1 ponto final, 2 vírgulas). Caso contrário,
+    devolve o rótulo genérico ``"Tabela de insumos / materiais"`` — mantém
+    compatibilidade com a sinalização já reconhecida pelo LLM.
+    """
+    fallback = "Tabela de insumos / materiais"
+    t = (prev_paragraph or "").strip().rstrip(":").strip()
+    if not t or len(t) > 120:
+        return fallback
+    if t.count(".") > 1 or t.count(",") > 2:
+        return fallback
+    return f"Tabela — {t}"
 
 
 def _append_docx_blocks(
@@ -213,22 +399,33 @@ def _append_docx_blocks(
     n_paras: list[int],
     n_tables: list[int],
 ) -> None:
-    """Acumula parágrafos e tabelas serializadas em ``parts``."""
+    """
+    Acumula parágrafos e tabelas serializadas em ``parts``.
+
+    Para cada tabela, usa o último parágrafo não-vazio anterior como pista
+    para um título descritivo (``_infer_table_title``). O conteúdo da tabela
+    é serializado no formato ``Item N — coluna: valor · ...`` por linha de
+    reagente, garantindo pareamento auto-contido (ver
+    :func:`_serialize_table_as_records`).
+    """
     from docx.table import Table
     from docx.text.paragraph import Paragraph
 
+    last_paragraph_text = ""
     for block in blocks:
         if isinstance(block, Paragraph):
             t = (block.text or "").strip()
             if t:
                 parts.append(t)
                 n_paras[0] += 1
+                last_paragraph_text = t
         elif isinstance(block, Table):
-            table_lines = _table_to_lines(block)
+            title = _infer_table_title(last_paragraph_text)
+            table_lines = _serialize_table_as_records(block, title=title)
             if table_lines:
-                parts.append("### Tabela de insumos / materiais")
                 parts.extend(table_lines)
                 n_tables[0] += 1
+            last_paragraph_text = ""
 
 
 # ── Extratores por formato ───────────────────────────────────────────────────

@@ -1,5 +1,5 @@
 # MVP: aplicação Streamlit roda só dentro deste contêiner.
-# Dados locais (Projetos) entram por volume; LM Studio continua no host.
+# Dados locais (Projetos) entram por volume; o LLM agora é remoto (OpenRouter).
 
 services:
   streamlit:
@@ -21,9 +21,15 @@ services:
       TRANSFORMERS_CACHE: /data/ml/huggingface
       KAGGLEHUB_CACHE: /data/ml/kagglehub
       KAGGLE_API_TOKEN: ${KAGGLE_API_TOKEN:-}
-      LLM_BASE_URL: ${LLM_BASE_URL:-http://192.168.15.7:1234}
-      LLM_MODEL: ${LLM_MODEL:-qwen3.5-9b-mtp}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-lm-studio}
+      # ── LLM remoto (OpenRouter, API compatível com OpenAI) ──
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://openrouter.ai/api/v1}
+      LLM_MODEL: ${LLM_MODEL:-openrouter/auto}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_APP_TITLE: ${OPENROUTER_APP_TITLE:-Assistente de Lab}
+      OPENROUTER_HTTP_REFERER: ${OPENROUTER_HTTP_REFERER:-}
+      # OPENAI_API_KEY fica como fallback caso alguma lib filha (CrewAI/LiteLLM)
+      # exija a variável padrão da OpenAI; em geral é a mesma chave do OpenRouter.
+      OPENAI_API_KEY: ${OPENROUTER_API_KEY:-${OPENAI_API_KEY:-}}
     volumes:
       # Pasta do host com um subdiretório por projeto de P&D (somente leitura)
       - type: bind
@@ -34,9 +40,6 @@ services:
       - assistente_duckdb:/data/duckdb
       - assistente_ml:/data/ml
       - assistente_sqlite:/data/sqlite
-    extra_hosts:
-      # Garante host.docker.internal no Linux (Docker 20.10+); no Docker Desktop Win/Mac já existe.
-      - "host.docker.internal:host-gateway"
 
 volumes:
   assistente_txtai:
