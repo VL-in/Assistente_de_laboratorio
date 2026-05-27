@@ -11,7 +11,6 @@ from __future__ import annotations
 from .handoff import HandoffStep, HandoffTrace
 from .runner import (
     CrewRunResult,
-    crew_enabled,
     parallel_tools_enabled,
     run_crew_chat,
     trace_handoff_enabled,
@@ -23,7 +22,6 @@ __all__ = [
     "HandoffStep",
     "HandoffTrace",
     "ToolResult",
-    "crew_enabled",
     "parallel_tools_enabled",
     "run_crew_chat",
     "trace_handoff_enabled",

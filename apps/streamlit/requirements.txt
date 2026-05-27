@@ -17,6 +17,7 @@ kagglehub[pandas-datasets]>=0.3.0
 torch>=2.2.0,<3.0.0
 # ESM-2: versões 4.40–4.47 podem falhar com token_dropout em lote; 4.48+ ou 5.x é mais seguro.
 transformers>=4.48.0,<6.0.0
-# Multiagentes — CrewAI 1.14+ com extra openai (LM Studio é OpenAI-compatible).
-# Ativado via USE_CREWAI=1; sem isso o app continua usando o chat_router legado.
+# Multiagentes — CrewAI 1.14+ com extra openai (OpenRouter é OpenAI-compatible).
+# Hoje só usado para o builder em ``agents/llm.py`` (reservado); o pipeline custom
+# em ``agents/crew.py`` não chama ``crewai.Crew``. Manter por compat futura.
 crewai[openai]>=1.14.0,<2.0.0

@@ -30,16 +30,6 @@ from agents.triage import TriageDecision
 from ml.training import ModelBundle
 
 
-def crew_enabled() -> bool:
-    """``USE_CREWAI=1|true|yes|on`` ativa o sistema multiagentes."""
-    return os.environ.get("USE_CREWAI", "0").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
-    )
-
-
 def trace_handoff_enabled() -> bool:
     """``CREW_TRACE_HANDOFF=0|false|no|off`` desativa a coleta de trilha."""
     return os.environ.get("CREW_TRACE_HANDOFF", "1").strip().lower() not in (
@@ -111,13 +101,16 @@ def run_crew_chat(
     ml_bundle: ModelBundle | None = None,
     ml_model_path: Path | None = None,
     parallel_tools: bool | None = None,
+    max_history_turns: int | None = None,
+    max_chars_per_message: int | None = None,
 ) -> CrewRunResult:
     """
     Executa o pipeline multiagente até a fronteira do Synthesizer (sem stream).
 
     O ``app.py`` deve checar ``result.greeting_response`` antes de qualquer
     outra coisa: se for não-``None``, ignora ``synth`` e exibe a resposta curta
-    direto. Senão, usa ``result.synth.messages`` para chamar
+    direto. Senão, usa ``result.synth.messages`` (já truncado conforme
+    ``max_history_turns``/``max_chars_per_message``) para chamar
     ``create_chat_completion(stream=True)`` e ``iter_stream_answer_text``.
     """
     trace = HandoffTrace()
@@ -159,6 +152,8 @@ def run_crew_chat(
             history=history_with_user,
             tool_results=tool_results,
             model_id=model,
+            max_history_turns=max_history_turns,
+            max_chars_per_message=max_chars_per_message,
         )
         h.set_output(
             f"system={len(synth.system_prompt)} chars · "

@@ -105,7 +105,7 @@ def dispatch_specialists(
     Executa as Tools selecionadas pelo Triage.
 
     Quando o Triage seleciona ML, RAG/OLAP são forçadas a ``False`` (predição é
-    auto-contida) — espelha ``chat_router._prioritize_ml_when_requested``.
+    auto-contida) — mesma regra do ``ML_HINT`` em ``agents.intent_rules``.
 
     Quando ``ctx.parallel_tools`` é true e há ≥2 tools selecionadas, executa em
     paralelo via ``ThreadPoolExecutor``. Caso contrário, executa em série

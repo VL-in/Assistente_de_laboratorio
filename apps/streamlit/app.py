@@ -5,8 +5,8 @@ Ponto de entrada único da aplicação. Orquestra todos os subsistemas locais:
 
 - ``projects_loader``: descobre projetos e arquivos nos volumes montados.
 - ``rag``: extração, chunking, índice txtai e busca semântica.
-- ``OpenAI`` (cliente SDK): conversa com o LM Studio rodando no host via API
-  compatível com OpenAI.
+- ``OpenAI`` (cliente SDK): conversa com o OpenRouter (API compatível com
+  OpenAI) usando a chave em ``OPENROUTER_API_KEY``.
 
 Abas da UI (usuário final)
 --------------------------
@@ -39,17 +39,17 @@ from llm_config import (
     get_llm_api_key,
     get_llm_base_url_raw,
     get_llm_model,
+    is_openrouter_endpoint,
     llm_runtime_config,
     normalize_openai_base_url,
+    openrouter_default_headers,
 )
 from agents import (
     CrewRunResult,
-    crew_enabled,
     parallel_tools_enabled,
     run_crew_chat,
     trace_handoff_enabled,
 )
-from chat_router import classification_needs_llm, resolve_chat_routes
 from qwen35_inference import (
     chat_history_chars_per_message,
     chat_max_history_turns,
@@ -59,7 +59,6 @@ from qwen35_inference import (
     env_enable_thinking_default,
     is_qwen35_model,
     iter_stream_answer_text,
-    sanitize_history_message,
     select_chat_profile,
     strip_thinking_blocks,
 )
@@ -84,19 +83,17 @@ from olap import (
     has_ingested_tables,
     list_ingested_tables,
     olap_status,
-    run_nl_olap_query,
     seed_demo_data,
     sync_tabular_from_scans,
 )
 from olap.schema_catalog import build_schema_catalog_text
 from ml.paths import chat_ml_model_available, chat_ml_model_path, ml_models_root
-from ml.chat_infer import load_chat_model_bundle, ml_inference_status_message, run_chat_ml_inference
+from ml.chat_infer import load_chat_model_bundle, ml_inference_status_message
 from ml.kaggle_sources import kaggle_cache_root
 from ml.training import flaml_available
 from rag import (
     EMBEDDING_MODEL_ID,
     build_index,
-    format_context_for_llm,
     index_mtime,
     index_ready,
     manifest_exists,
@@ -107,60 +104,10 @@ from rag import (
 )
 from ml.ui import render_ml_tab
 
-# ── System prompt ────────────────────────────────────────────────────────────
-# Instrução base enviada ao LLM em todas as conversas. Quando o RAG está ativo,
-# o contexto recuperado é **concatenado** a este prompt (não substitui), para
-# que o modelo mantenha o papel e as restrições definidas aqui.
-
-CHAT_SYSTEM_PROMPT = (
-    """<role>
-Você é um assistente de laboratório experiente que atua em pesquisa e desenvolvimento de imunodiagnósticos, principalmente ELISA. Você passou muitos anos trabalhando com dados laboratoriais, planejamento de ensaios, interpretação de resultados. Já viu inúmeros erros por desatenção e sabe que documentação e rastreabilidade de informação é crucial em projetos de desenvolvimento. Você entende que existem múltiplos documentos de experimentos que representam linhas de raciocínio contínua, tratando, por tanto, os documentos não só isoladamente, mas uma sequência.
-</role>
-
-<context>
-Estamos trabalhando em um laboratório de p&D que está com projeto de ELISA ativa. Os pesquisadores planejam e documentam por meio de arquivos docx dados como materiais e insumos, lotes e validades. Os documentos possuem padrões, e os insumos se apresentam na ordem de "nome"/"Fabricante ou código"/ "Lote" ou "Ativo" do equipamento/"Validade". Os pesquisadores vão vir até você para fazer perguntas sobre o que foi feito ou usado nos experimentos passados. O seu trabalho é identificar o que o usuário está buscando e, através dos resultados, apresentar as informações relevantes. Perceba que a mesma informação pode aparecer em diferentes documentos, que podem compor a resposta retornada.
-</context>
-
-<constraints>
-- Nunca invente dados, busque por retrieval as respostas quando a pergunta é voltada para os ensaios.
-- Analise todos os chunks e entenda que a resposta pode ser composta por dados de diferentes documentos.
-- Não altere nenhum dado dos documentos.
-- Retorne as informações junto ao título do documento e a sua data de planejamento.
-- Ao final de cada resposta, seja cordial e pergunte se pode ajudar com mais alguma dúvida.
-- Faça sempre uma pergunta de cada vez.
-- Caso não tenha encontrado respostas nos documentos, expresse isso educadamente.
-- Quando houver bloco de predição ML no contexto, explique o resultado com base somente nesses números; não invente predições fora do que foi calculado.
-</constraints>
-
-<goals>
-- Identifique o objetivo do usuário.
-- Se o usuário perguntar sobre nome de insumo, fabricante, lote ou validade, lembre que os dados estão sempre descritos nessa ordem.
-- Sintetizar uma resposta objetiva que contenha o dado referente às perguntas feitas, sempre referenciando o documento.
-</goals>
-
-<invocation>
-Sempre use a mesma língua do usuário. Por padrão, utilize português brasileiro. Seja cordial, profissional, objetivo e educado.
-</invocation>"""
-)
-
-CHAT_ML_SYSTEM_PROMPT = (
-    """<role>
-Você é um assistente de laboratório que interpreta predições de um modelo de ML já treinado (afinidade Ab–Ag, benchmark AbRank).
-</role>
-
-<constraints>
-- A predição numérica JÁ FOI CALCULADA localmente e está no bloco "Resultado da inferência ML" abaixo.
-- Use SOMENTE os valores dessa tabela na resposta. Não diga que falta acesso a documentos ou planilhas para esta pergunta.
-- Não peça ao usuário para buscar documentos quando a tabela de predição estiver presente.
-- Se o bloco indicar falha ou dados insuficientes, explique o que falta (nomes exatos das colunas) sem inventar números.
-- Seja objetivo: 2–3 parágrafos curtos com o valor de `predicao_log_aff` (ou `predicao`) e interpretação breve.
-- Ao final, pergunte se pode ajudar com mais alguma dúvida.
-</constraints>
-
-<invocation>
-Responda em português brasileiro, cordial e profissional.
-</invocation>"""
-)
+# ── System prompts ───────────────────────────────────────────────────────────
+# Os prompts do chat (geral e rota ML) vivem em ``agents/synthesizer.py``,
+# único responsável por montar o contexto que vai ao LLM. Para editar o tom
+# ou as constraints do assistente, vá lá.
 
 
 st.set_page_config(
@@ -281,19 +228,44 @@ def rag_semantic_search(
 
 
 @st.cache_resource
-def _openai_client_cached(base_url: str, api_key: str, timeout_s: float) -> OpenAI:
-    """Cliente OpenAI reutilizado entre mensagens (evita handshake repetido)."""
-    return OpenAI(base_url=base_url, api_key=api_key, timeout=timeout_s)
+def _openai_client_cached(
+    base_url: str,
+    api_key: str,
+    timeout_s: float,
+    default_headers_items: tuple[tuple[str, str], ...] = (),
+) -> OpenAI:
+    """
+    Cliente OpenAI reutilizado entre mensagens (evita handshake repetido).
+
+    ``default_headers_items`` chega como tupla de pares (key, value) porque o
+    ``st.cache_resource`` precisa de argumentos hashable; é reconstruído como
+    dict antes de passar ao SDK. Para o OpenRouter, aqui entram os cabeçalhos
+    ``HTTP-Referer`` e ``X-Title`` (rankings).
+    """
+    headers = dict(default_headers_items) if default_headers_items else None
+    return OpenAI(
+        base_url=base_url,
+        api_key=api_key,
+        timeout=timeout_s,
+        default_headers=headers,
+    )
 
 
 def _openai_client() -> OpenAI:
     base, _, api_key = llm_runtime_config()
     timeout_s = float(os.environ.get("LLM_TIMEOUT_S", "120"))
-    return _openai_client_cached(base, api_key, timeout_s)
+    headers = openrouter_default_headers() if is_openrouter_endpoint(base) else {}
+    headers_items = tuple(sorted(headers.items()))
+    return _openai_client_cached(base, api_key, timeout_s, headers_items)
 
 
 def _check_openai_compatible_models(base_url: str, *, timeout_s: float = 5.0) -> tuple[bool, str]:
-    """GET {base}/v1/models — compatível com LM Studio no host."""
+    """
+    GET ``{base}/v1/models`` — compatível com OpenRouter (e qualquer endpoint
+    OpenAI-compatible). Quando a URL aponta para o OpenRouter, anexamos os
+    headers de rankings (``HTTP-Referer``/``X-Title``) para refletir como o
+    app aparece na plataforma.
+    """
     b = normalize_openai_base_url(base_url.strip())
     if not b:
         return False, "URL base vazia."
@@ -302,6 +274,9 @@ def _check_openai_compatible_models(base_url: str, *, timeout_s: float = 5.0) ->
     api_key = get_llm_api_key()
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
+    if is_openrouter_endpoint(b):
+        for k, v in openrouter_default_headers().items():
+            headers.setdefault(k, v)
     req = urllib.request.Request(url, method="GET", headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=timeout_s) as resp:
@@ -339,7 +314,6 @@ def _run_chat_via_crew(
     history_before: list[dict],
     client: OpenAI,
     model: str,
-    base: str,
     use_rag: bool,
     use_olap: bool,
     use_ml: bool,
@@ -354,15 +328,16 @@ def _run_chat_via_crew(
     chat_box,
 ) -> None:
     """
-    Caminho A do chat: pipeline multiagente (Triage → Tools → Synthesizer).
-
-    Encapsulado em função separada para deixar o ``_tab_chat`` legível e
-    permitir desligar via toggle sem ramificar todo o código de UI.
+    Pipeline multiagente do chat (Triage → Tools → Synthesizer).
 
     O Synthesizer é executado **aqui** (não dentro do Crew) porque
     ``st.write_stream`` precisa do gerador da chamada
     ``create_chat_completion(stream=True)`` neste contexto Streamlit. O Crew
     apenas prepara as ``messages``, contextos e a trilha.
+
+    Os limites de histórico (``max_history_turns``, ``max_chars_per_message``)
+    são propagados ao ``run_crew_chat`` — o próprio Synthesizer aplica a
+    truncagem em ``synth.messages``, evitando duplicação de lógica no app.
     """
     documents_available = use_rag and index_ready()
     spreadsheets_available = use_olap and has_ingested_tables()
@@ -379,6 +354,17 @@ def _run_chat_via_crew(
         mtime = ml_path.stat().st_mtime if ml_path.is_file() else 0.0
         ml_bundle = _ml_bundle_cached(str(ml_path), mtime)
 
+    # Estimativa preliminar dos limites para passar ao runner. O Synthesizer
+    # ajusta dinamicamente quando ``used_ml`` for true, mas precisamos passar
+    # algum valor antes — usamos o limite "geral" e revisamos abaixo se a rota
+    # for ML.
+    pre_max_tokens, pre_hist_turns = effective_chat_limits(
+        run_ml=False,
+        max_tokens=int(max_tokens),
+        max_history_turns=int(max_history_turns),
+    )
+    pre_hist_chars = chat_history_chars_per_message(ml_route=False)
+
     with st.spinner("Coordenando agentes…"):
         crew_result = run_crew_chat(
             prompt,
@@ -394,6 +380,8 @@ def _run_chat_via_crew(
             ml_bundle=ml_bundle,
             ml_model_path=ml_path,
             parallel_tools=parallel_tools_enabled(),
+            max_history_turns=int(pre_hist_turns),
+            max_chars_per_message=int(pre_hist_chars),
         )
 
     if show_dev_details and crew_result.triage is not None:
@@ -463,24 +451,23 @@ def _run_chat_via_crew(
     )
     history_chars = chat_history_chars_per_message(ml_route=used_ml)
 
-    # Sanitiza e trunca o histórico do prompt usando os mesmos limites do
-    # caminho legado para preservar o comportamento de janela do LM Studio.
-    api_messages = [
-        {"role": "system", "content": crew_result.synth.system_prompt}
-    ]
-    history_for_api = _trim_chat_history(
-        st.session_state.chat_messages,
-        int(history_turns),
-        max_chars_per_message=history_chars,
-    )
-    api_messages += [
-        {
-            "role": m["role"],
-            "content": sanitize_history_message(m["role"], m["content"], model_id=model),
-        }
-        for m in history_for_api
-    ]
+    # Rota ML: refaz o prompt com janela menor (synth.messages anterior usou
+    # os limites "gerais" porque ainda não sabíamos a rota). Custo desprezível
+    # — apenas reordena strings, sem novas chamadas LLM.
+    if used_ml and (history_turns != pre_hist_turns or history_chars != pre_hist_chars):
+        from agents.synthesizer import build_messages as _rebuild
 
+        history_with_user = history_before + [{"role": "user", "content": prompt}]
+        crew_result.synth = _rebuild(
+            user_message=prompt,
+            history=history_with_user,
+            tool_results=crew_result.tool_results,
+            model_id=model,
+            max_history_turns=int(history_turns),
+            max_chars_per_message=int(history_chars),
+        )
+
+    api_messages = crew_result.synth.messages
     chat_profile = select_chat_profile(
         model_id=model, use_thinking=use_thinking and is_qwen35_model(model)
     )
@@ -579,37 +566,6 @@ def _render_handoff_trace(crew_result: CrewRunResult) -> None:
                 st.divider()
 
 
-def _trim_chat_history(
-    messages: list[dict],
-    max_turns: int,
-    *,
-    max_chars_per_message: int | None = None,
-) -> list[dict]:
-    """
-    Retorna os últimos ``max_turns`` pares (user + assistant) do histórico.
-
-    Cada "turno" corresponde a 2 mensagens (1 do usuário + 1 do assistente),
-    portanto o limite em mensagens é ``max_turns × 2``.
-
-    Com ``max_chars_per_message``, encurta cada mensagem (útil na rota ML,
-    onde respostas longas do assistente não precisam ir inteiras ao prompt).
-    """
-    if max_turns <= 0:
-        return []
-    max_msgs = max_turns * 2
-    trimmed = messages if len(messages) <= max_msgs else messages[-max_msgs:]
-    if not max_chars_per_message or max_chars_per_message <= 0:
-        return trimmed
-    out: list[dict] = []
-    for m in trimmed:
-        role = m.get("role", "user")
-        content = str(m.get("content") or "")
-        if len(content) > max_chars_per_message:
-            content = content[:max_chars_per_message] + "…"
-        out.append({"role": role, "content": content})
-    return out
-
-
 # ── Barra lateral ────────────────────────────────────────────────────────────
 
 def _run_project_scan(*, show_errors_in_sidebar: bool = False) -> None:
@@ -667,8 +623,8 @@ def _tab_inicio() -> None:
     st.header("Agente de IA para documentos de P&D")
     st.markdown(
         "Este produto segue o **playbook MVP biotech**: análise documental local (`docx`, `xlsx`, `xlsm`, …), "
-        "**RAG** com índice vetorial (**txtai**), consultas **OLAP** (**DuckDB**) e geração via **LM Studio** no host, "
-        "tudo orquestrado aqui no **Streamlit** (sem obrigatoriedade de API REST separada)."
+        "**RAG** com índice vetorial (**txtai**), consultas **OLAP** (**DuckDB**) e geração via **OpenRouter** "
+        "(API compatível com OpenAI), tudo orquestrado aqui no **Streamlit**."
     )
     st.subheader("O que o agente faz (visão)")
     c1, c2 = st.columns(2)
@@ -681,7 +637,7 @@ def _tab_inicio() -> None:
         )
     with c2:
         st.markdown("**3. Indexar (RAG)** — Embeddings + metadados de origem; reprocessamento quando o hash mudar.")
-        st.markdown("**4. Responder com contexto** — Recuperação + LM Studio; respostas devem citar arquivo/projeto.")
+        st.markdown("**4. Responder com contexto** — Recuperação + OpenRouter; respostas devem citar arquivo/projeto.")
     st.subheader("Fluxo do pipeline (resumo)")
     st.code(
         "Pasta local → inventário (projects_loader) → extração/chunking → txtai → chat com citações\n"
@@ -690,7 +646,7 @@ def _tab_inicio() -> None:
     )
     with st.expander("Fases do plano (checklist)"):
         st.markdown(
-            "- **Fase 1** — Diagnóstico, LM Studio, DuckDB olá mundo (aba OLAP), metadados.\n"
+            "- **Fase 1** — Diagnóstico, integração LLM (OpenRouter), DuckDB olá mundo (aba OLAP), metadados.\n"
             "- **Fase 2** — Parsing, hash, página de status de ingestão.\n"
             "- **Fase 3** — txtai + chat com citações.\n"
             "- **Fase 4** — RBAC, auditoria, guardrails."
@@ -1091,7 +1047,7 @@ def _tab_rag_dev() -> None:
     st.header("Teste RAG (desenvolvedor)")
     st.caption(
         "Consulta direta ao índice **txtai** (mesmo backend do chat com RAG). "
-        "Use para validar chunking, metadados e relevância antes de acoplar ao LM Studio."
+        "Use para validar chunking, metadados e relevância antes de acoplar ao LLM remoto."
     )
 
     st.markdown(
@@ -1184,7 +1140,6 @@ def _chat_effective_options() -> dict:
         if dev_override
         else chat_ml_model_available()
     )
-    use_crew = bool(st.session_state.get("dev_chat_use_crew", crew_enabled()))
     show_trace = bool(st.session_state.get("dev_chat_show_trace", trace_handoff_enabled()))
     return {
         "use_rag": use_rag and index_ready(),
@@ -1201,7 +1156,6 @@ def _chat_effective_options() -> dict:
         ),
         "use_thinking": bool(st.session_state.get("dev_chat_use_thinking", env_enable_thinking_default())),
         "use_stream": bool(st.session_state.get("chat_use_stream", True)),
-        "use_crew": use_crew,
         "show_trace": show_trace,
     }
 
@@ -1255,30 +1209,17 @@ def _tab_chat_dev_controls() -> None:
         st.toggle("Streaming", value=True, key="chat_use_stream")
     st.caption(f"Modelo ML do chat: `{chat_ml_model_path()}`")
 
-    # Sistema multiagentes (CrewAI). Ativado por padrão quando USE_CREWAI=1; toggle
-    # permite inverter o comportamento para fins de comparação.
-    cc1, cc2 = st.columns(2)
-    with cc1:
-        st.toggle(
-            "Sistema multiagentes (Crew)",
-            value=crew_enabled(),
-            key="dev_chat_use_crew",
-            help=(
-                "Quando ativo, o chat usa o pipeline Triage → Tools → Synthesizer "
-                "(ver `agents/AGENTS.md`). Custo de tokens equivalente ao roteador "
-                "atual; principal ganho é rastreabilidade."
-            ),
-        )
-    with cc2:
-        st.toggle(
-            "Mostrar trilha do crew (modo aprendizado)",
-            value=trace_handoff_enabled(),
-            key="dev_chat_show_trace",
-            help=(
-                "Exibe um expander abaixo da resposta com cada etapa do Crew "
-                "(Greeter, Triage, RAG/OLAP/ML, Synthesizer) e seus metadados."
-            ),
-        )
+    # Trilha de handoff (aprendizado / auditoria). O pipeline multiagente é o
+    # único caminho do chat — não há mais toggle de Crew on/off.
+    st.toggle(
+        "Mostrar trilha do crew (modo aprendizado)",
+        value=trace_handoff_enabled(),
+        key="dev_chat_show_trace",
+        help=(
+            "Exibe um expander abaixo da resposta com cada etapa do Crew "
+            "(Greeter, Triage, RAG/OLAP/ML, Synthesizer) e seus metadados."
+        ),
+    )
 
     c4, c5, c6 = st.columns(3)
     with c4:
@@ -1325,7 +1266,7 @@ def _tab_chat() -> None:
     st.header("Conversa")
     st.caption("Pergunte sobre experimentos, insumos e resultados documentados no laboratório.")
 
-    base, model, _ = llm_runtime_config()
+    _, model, _ = llm_runtime_config()
     opts = _chat_effective_options()
     use_rag = opts["use_rag"]
     use_olap = opts["use_olap"]
@@ -1335,7 +1276,6 @@ def _tab_chat() -> None:
     max_history_turns = opts["max_history_turns"]
     use_thinking = opts["use_thinking"]
     use_stream = opts["use_stream"]
-    use_crew = opts["use_crew"]
     show_trace = opts["show_trace"]
 
     if "chat_messages" not in st.session_state:
@@ -1382,232 +1322,26 @@ def _tab_chat() -> None:
 
         history_before = st.session_state.chat_messages[:-1]
 
-        # ── Caminho A: Sistema multiagentes (Crew) ──────────────────────────
-        # Triage → Tools (paralelas) → Synthesizer. Greeter rule-based curto-
-        # circuita saudações sem chamar o LLM.
-        if use_crew:
-            _run_chat_via_crew(
-                prompt=prompt,
-                history_before=history_before,
-                client=client,
-                model=model,
-                base=base,
-                use_rag=use_rag,
-                use_olap=use_olap,
-                use_ml=use_ml,
-                rag_top_k=rag_top_k,
-                rag_project_ids=rag_project_ids,
-                max_tokens=max_tokens,
-                max_history_turns=max_history_turns,
-                use_thinking=use_thinking,
-                use_stream=use_stream,
-                show_dev_details=show_dev_details,
-                show_trace=show_trace,
-                chat_box=chat_box,
-            )
-            return
-
-        # ── Caminho B: Roteador legado (chat_router) ────────────────────────
-        _route_kwargs = dict(
-            message=prompt,
-            history=history_before,
+        # Pipeline multiagente: Triage → Tools (paralelas) → Synthesizer.
+        # Greeter rule-based curto-circuita saudações sem chamar o LLM.
+        _run_chat_via_crew(
+            prompt=prompt,
+            history_before=history_before,
             client=client,
             model=model,
-            documents_enabled=use_rag and index_ready(),
-            spreadsheets_enabled=use_olap and has_ingested_tables(),
-            ml_enabled=use_ml,
-            manual_override=show_dev_details,
+            use_rag=use_rag,
+            use_olap=use_olap,
+            use_ml=use_ml,
+            rag_top_k=rag_top_k,
+            rag_project_ids=rag_project_ids,
+            max_tokens=max_tokens,
+            max_history_turns=max_history_turns,
+            use_thinking=use_thinking,
+            use_stream=use_stream,
+            show_dev_details=show_dev_details,
+            show_trace=show_trace,
+            chat_box=chat_box,
         )
-        needs_llm_router = not show_dev_details and classification_needs_llm(prompt)
-        if needs_llm_router:
-            with st.spinner("Analisando pergunta…"):
-                route = resolve_chat_routes(**_route_kwargs)
-        else:
-            route = resolve_chat_routes(**_route_kwargs)
-        run_ml = route.use_ml
-        run_rag = route.use_documents and not run_ml
-        run_olap = route.use_spreadsheets and not run_ml
-        if show_dev_details:
-            st.caption(
-                f"Roteador ({route.source}): documentos={'sim' if run_rag else 'não'} · "
-                f"planilhas={'sim' if run_olap else 'não'} · "
-                f"ml={'sim' if run_ml else 'não'}"
-                + (
-                    f" · RAG projetos={', '.join(sorted(rag_project_ids))}"
-                    if rag_project_ids
-                    else ""
-                )
-            )
-
-        system_prompt = CHAT_ML_SYSTEM_PROMPT if run_ml else CHAT_SYSTEM_PROMPT
-        if run_rag:
-            hits = rag_semantic_search(
-                prompt, int(rag_top_k), project_ids=rag_project_ids
-            )
-            ctx = format_context_for_llm(hits)
-            if ctx:
-                system_prompt += (
-                    "\n\n### Contexto recuperado dos documentos do laboratório\n"
-                    + ctx
-                    + "\n\nBaseie respostas sobre ensaios neste contexto quando for relevante; "
-                    "cite projeto e arquivo como nos cabeçalhos [n]. Se o contexto não ajudar, diga claramente."
-                )
-            else:
-                system_prompt += (
-                    "\n\n(Nenhum trecho relevante foi recuperado do índice para esta pergunta — "
-                    "não invente dados de ensaios.)"
-                )
-
-        ml_result = None
-        if run_ml:
-            model_path = chat_ml_model_path()
-            mtime = model_path.stat().st_mtime if model_path.is_file() else 0.0
-            bundle = _ml_bundle_cached(str(model_path), mtime)
-            with st.spinner(
-                "Executando predição ML"
-                + (" (ESM-2 + modelo)…" if getattr(bundle, "sequence_transformer", None) else "…")
-            ):
-                ml_result = run_chat_ml_inference(
-                    prompt,
-                    history=history_before,
-                    client=client,
-                    model=model,
-                    bundle=bundle,
-                    model_path=model_path,
-                )
-            if ml_result.context_for_llm:
-                system_prompt += "\n\n" + ml_result.context_for_llm
-            if show_dev_details:
-                with st.expander("Predição ML (dev)", expanded=False):
-                    if ml_result.predictions is not None:
-                        st.dataframe(
-                            ml_result.predictions,
-                            use_container_width=True,
-                            hide_index=True,
-                        )
-                    if ml_result.raw_llm_response:
-                        st.code(ml_result.raw_llm_response, language="json")
-                    if ml_result.error and not ml_result.ok:
-                        st.warning(ml_result.error)
-            elif ml_result.error and not ml_result.ok and not ml_result.context_for_llm:
-                system_prompt += (
-                    f"\n\n### Predição ML (falha)\n{ml_result.error}\n"
-                    "Explique o problema e o que o usuário precisa informar."
-                )
-
-        olap_result = None
-        if run_olap:
-            with st.spinner("Consultando planilhas…"):
-                olap_result = run_nl_olap_query(prompt, client=client, model=model)
-            if olap_result.ok and olap_result.context_for_llm:
-                system_prompt += "\n\n" + olap_result.context_for_llm
-                system_prompt += (
-                    "\n\nAo responder com dados tabulares acima, cite projeto (_project_id) "
-                    "e arquivo (_source_file). Não invente valores fora do resultado SQL."
-                )
-                if show_dev_details:
-                    with st.expander("SQL e dados (dev)", expanded=False):
-                        if olap_result.sql:
-                            st.code(olap_result.sql, language="sql")
-                        if olap_result.dataframe is not None:
-                            st.dataframe(
-                                olap_result.dataframe,
-                                use_container_width=True,
-                                hide_index=True,
-                            )
-            elif olap_result.error:
-                if show_dev_details:
-                    st.warning(f"Planilhas: {olap_result.error}")
-                    with st.expander("Detalhe da consulta (dev)", expanded=False):
-                        if olap_result.sql:
-                            st.code(olap_result.sql, language="sql")
-                        if olap_result.raw_llm_response:
-                            st.code(olap_result.raw_llm_response, language="text")
-                system_prompt += (
-                    f"\n\n### Dados tabulares (falha na consulta)\n{olap_result.error}\n"
-                    "Explique o problema ao usuário sem inventar números de planilhas."
-                )
-
-        reply_max_tokens, history_turns = effective_chat_limits(
-            run_ml=run_ml,
-            max_tokens=int(max_tokens),
-            max_history_turns=int(max_history_turns),
-        )
-        history_chars = chat_history_chars_per_message(ml_route=run_ml)
-        history_trimmed = _trim_chat_history(
-            st.session_state.chat_messages,
-            int(history_turns),
-            max_chars_per_message=history_chars,
-        )
-        if show_dev_details and run_ml:
-            st.caption(
-                f"Limites ML: max_tokens={reply_max_tokens} · "
-                f"histórico={history_turns} turno(s) · "
-                f"{history_chars} chars/msg"
-            )
-        api_messages = [{"role": "system", "content": system_prompt}]
-        api_messages += [
-            {
-                "role": m["role"],
-                "content": sanitize_history_message(
-                    m["role"], m["content"], model_id=model
-                ),
-            }
-            for m in history_trimmed
-        ]
-
-        chat_profile = select_chat_profile(model_id=model, use_thinking=use_thinking and is_qwen35_model(model))
-
-        with chat_box:
-            for msg in st.session_state.chat_messages:
-                with st.chat_message(msg["role"]):
-                    st.markdown(msg["content"])
-            with st.chat_message("assistant"):
-                try:
-                    if use_stream:
-                        stream = create_chat_completion(
-                            client,
-                            messages=api_messages,
-                            model=model,
-                            profile=chat_profile,
-                            max_tokens=int(reply_max_tokens),
-                            stream=True,
-                        )
-
-                        def _token_stream():
-                            yield from iter_stream_answer_text(stream, model_id=model)
-
-                        full_text = st.write_stream(_token_stream)
-                        answer = strip_thinking_blocks(full_text or "")
-                        st.session_state.chat_messages.append(
-                            {"role": "assistant", "content": answer}
-                        )
-                    else:
-                        with st.spinner("Gerando resposta…"):
-                            completion = create_chat_completion(
-                                client,
-                                messages=api_messages,
-                                model=model,
-                                profile=chat_profile,
-                                max_tokens=int(reply_max_tokens),
-                                stream=False,
-                            )
-                        raw = (completion.choices[0].message.content or "").strip()
-                        text = strip_thinking_blocks(raw)
-                        st.markdown(text)
-                        st.session_state.chat_messages.append(
-                            {"role": "assistant", "content": text}
-                        )
-                except Exception as exc:
-                    st.error(f"Não foi possível obter resposta do assistente: {exc}")
-                    if (
-                        st.session_state.chat_messages
-                        and st.session_state.chat_messages[-1].get("role") == "user"
-                    ):
-                        st.session_state.chat_messages.pop()
-                    st.caption(
-                        "A última mensagem foi removida; verifique o servidor de IA e tente de novo."
-                    )
 
 
 def _tab_desenvolvimento(
@@ -1779,12 +1513,13 @@ def _tab_diagnostico(root: Path, root_ok: bool, root_msg: str) -> None:
         else:
             st.error(detail)
 
-    st.subheader("LM Studio (API compatível com OpenAI)")
+    st.subheader("LLM remoto (OpenRouter — API compatível com OpenAI)")
     llm_base = get_llm_base_url_raw()
     llm_model = get_llm_model()
     resolved_base, _, _ = llm_runtime_config()
     env_base = os.environ.get("LLM_BASE_URL", "").strip()
     env_model = os.environ.get("LLM_MODEL", "").strip()
+    api_key_present = bool(get_llm_api_key())
     st.text_input(
         "LLM_BASE_URL (efetiva)",
         value=llm_base,
@@ -1807,6 +1542,19 @@ def _tab_diagnostico(root: Path, root_ok: bool, root_msg: str) -> None:
         st.caption("Origem: variável de ambiente `LLM_MODEL`.")
     else:
         st.caption(f"Origem: padrão do projeto (`{DEFAULT_LLM_MODEL}`).")
+    if api_key_present:
+        st.caption(
+            "Chave de API: **configurada** "
+            "(`OPENROUTER_API_KEY` ou `OPENAI_API_KEY`)."
+        )
+    else:
+        st.warning(
+            "Nenhuma chave de API foi encontrada. Defina `OPENROUTER_API_KEY` "
+            "no `.env` e recrie o contêiner (`docker compose up -d --build`)."
+        )
+    if is_openrouter_endpoint(resolved_base):
+        with st.expander("Headers do OpenRouter (rankings)", expanded=False):
+            st.json(openrouter_default_headers())
     if st.button("Testar GET /v1/models (timeout 5s)", key="btn_llm_ping"):
         ok, detail = _check_openai_compatible_models(llm_base)
         if ok:
