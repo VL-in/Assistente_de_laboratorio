@@ -251,7 +251,8 @@ class BuildMessagesTests(unittest.TestCase):
             model_id="qwen3.5-9b-mtp",
         )
         self.assertEqual(si.messages[0]["role"], "system")
-        self.assertEqual(len(si.messages), 3)
+        self.assertEqual(len(si.messages), 4)
+        self.assertEqual(si.messages[-1]["content"], "Qual a validade?")
         self.assertFalse(si.used_ml)
 
     def test_ml_result_changes_system_prompt(self) -> None:

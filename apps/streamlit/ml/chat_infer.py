@@ -319,6 +319,27 @@ def _tabular_feature_columns(bundle: ModelBundle) -> list[str]:
     return [c for c in bundle.feature_columns if not c.startswith("seq_pca_")]
 
 
+def _message_with_recent_user_context(
+    message: str,
+    history: list[dict] | None,
+    *,
+    max_user_turns: int = 3,
+) -> str:
+    """Concatena mensagens recentes do usuário — útil quando sequências vieram em turnos anteriores."""
+    parts: list[str] = []
+    for turn in history or []:
+        if turn.get("role") == "user":
+            text = str(turn.get("content") or "").strip()
+            if text:
+                parts.append(text)
+    if len(parts) > max_user_turns:
+        parts = parts[-max_user_turns:]
+    current = (message or "").strip()
+    if not parts or parts[-1] != current:
+        parts.append(current)
+    return "\n".join(parts)
+
+
 def _merge_sequence_fields(rows: list[dict], message: str) -> list[dict]:
     """Combina sequências extraídas da mensagem (regex/FASTA) com linhas do LLM/regras."""
     seqs = extract_sequences_from_text(message)
@@ -430,13 +451,14 @@ def run_chat_ml_inference(
         model=model,
         bundle=loaded,
     )
+    context_text = _message_with_recent_user_context(message, history)
     if extract_err or not rows:
-        rule_rows = extract_features_rule_based(message, loaded)
+        rule_rows = extract_features_rule_based(context_text, loaded)
         if rule_rows:
             rows = rule_rows
             extract_err = None
             raw = raw or json.dumps({"rows": rows, "source": "rule_based"}, ensure_ascii=False)
-    rows = _merge_sequence_fields(rows, message)
+    rows = _merge_sequence_fields(rows, context_text)
     if not rows:
         err = extract_err or "Nenhuma feature ou sequência foi extraída da mensagem."
         return MlInferResult(
@@ -455,7 +477,8 @@ def run_chat_ml_inference(
         from ml.sequence_embeddings import clean_protein_sequence
 
         has_seq = any(
-            clean_protein_sequence(rows[0].get(col))
+            clean_protein_sequence(row.get(col))
+            for row in rows
             for col in transformer.config.sequence_columns
         )
         if not has_seq:

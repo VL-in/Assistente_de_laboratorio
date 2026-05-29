@@ -1,0 +1,108 @@
+"""
+Reranking de candidatos RAG com cross-encoder.
+
+A busca vetorial (bi-encoder) é rápida, mas o score de similaridade nem sempre
+coloca os trechos mais úteis no topo. O rerank reavalia pares (pergunta, trecho)
+com um modelo cross-encoder — mais lento, porém mais preciso — sobre um pool
+maior de candidatos antes de montar o contexto para o LLM.
+"""
+
+from __future__ import annotations
+
+import os
+from typing import Any
+
+# Multilingual MS MARCO — adequado a documentos de laboratório em pt-BR.
+RERANKER_MODEL_ID = os.environ.get(
+    "RAG_RERANK_MODEL_ID",
+    "cross-encoder/mmarco-mMiniLMv2-L6-H384-v1",
+).strip()
+
+ENV_RERANK_ENABLED = "RAG_RERANK_ENABLED"
+ENV_RERANK_RETRIEVE_K = "RAG_RERANK_RETRIEVE_K"
+DEFAULT_RERANK_MULTIPLIER = 4
+DEFAULT_RERANK_MIN_CANDIDATES = 20
+RERANK_TEXT_MAX_CHARS = 2000
+
+
+def env_rerank_enabled() -> bool:
+    """``RAG_RERANK_ENABLED=0`` desliga o rerank (útil em dev sem baixar o modelo)."""
+    return os.environ.get(ENV_RERANK_ENABLED, "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+def default_retrieve_k(top_k: int, override: int | None = None) -> int:
+    """
+    Quantos candidatos buscar antes do rerank.
+
+    Prioridade: ``override`` explícito > ``RAG_RERANK_RETRIEVE_K`` > heurística
+    ``max(top_k * 4, 20)``.
+    """
+    tk = max(int(top_k), 1)
+    if override is not None and int(override) > 0:
+        return max(int(override), tk)
+
+    env_raw = os.environ.get(ENV_RERANK_RETRIEVE_K, "").strip()
+    if env_raw:
+        try:
+            env_k = int(env_raw)
+            if env_k > 0:
+                return max(env_k, tk)
+        except ValueError:
+            pass
+
+    return max(tk * DEFAULT_RERANK_MULTIPLIER, DEFAULT_RERANK_MIN_CANDIDATES)
+
+
+def hit_text_for_rerank(hit: dict) -> str:
+    """Texto do chunk usado pelo cross-encoder (com truncagem por limite de tokens)."""
+    body = (hit.get("cited") or hit.get("text") or "").strip()
+    if len(body) > RERANK_TEXT_MAX_CHARS:
+        return body[:RERANK_TEXT_MAX_CHARS]
+    return body
+
+
+def load_reranker(model_id: str | None = None) -> Any:
+    """Carrega um ``CrossEncoder`` do sentence-transformers."""
+    from sentence_transformers import CrossEncoder
+
+    mid = (model_id or RERANKER_MODEL_ID).strip()
+    if not mid:
+        raise ValueError("RAG_RERANK_MODEL_ID vazio.")
+    return CrossEncoder(mid)
+
+
+def rerank_hits(
+    query: str,
+    hits: list[dict],
+    *,
+    reranker: object,
+    top_k: int,
+) -> list[dict]:
+    """
+    Reordena hits pelo score do cross-encoder e devolve os ``top_k`` melhores.
+
+    Preserva o score da busca vetorial em ``retrieval_score`` e substitui
+    ``score`` pelo score do rerank (para exibição e metadados do handoff).
+    """
+    q = (query or "").strip()
+    if not q or not hits or top_k <= 0:
+        return hits[: max(top_k, 0)]
+
+    pairs = [(q, hit_text_for_rerank(h)) for h in hits]
+    raw_scores = reranker.predict(pairs)  # type: ignore[attr-defined]
+
+    reranked: list[dict] = []
+    for hit, score in zip(hits, raw_scores):
+        out = dict(hit)
+        if "retrieval_score" not in out:
+            out["retrieval_score"] = hit.get("score")
+        out["score"] = float(score)
+        reranked.append(out)
+
+    reranked.sort(key=lambda h: h.get("score") or 0.0, reverse=True)
+    return reranked[: int(top_k)]

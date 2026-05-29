@@ -100,11 +100,16 @@ from ml.kaggle_sources import kaggle_cache_root
 from ml.training import flaml_available
 from rag import (
     EMBEDDING_MODEL_ID,
+    RERANKER_MODEL_ID,
     build_index,
+    default_retrieve_k,
+    env_rerank_enabled,
     index_mtime,
     index_ready,
+    load_reranker,
     manifest_exists,
     manifest_path,
+    rerank_hits,
     search_with_backend,
     txtai_data_root,
     txtai_index_path,
@@ -212,18 +217,36 @@ def _ml_bundle_cached(model_path: str, mtime_key: float):
     return load_chat_model_bundle(Path(model_path))
 
 
+@st.cache_resource(show_spinner="Carregando reranker RAG (cross-encoder)…")
+def _rag_reranker_cached():
+    """
+    Carrega o cross-encoder para rerank em cache de processo.
+
+    Retorna ``None`` quando ``RAG_RERANK_ENABLED=0`` ou se o modelo não puder
+    ser carregado — nesse caso o RAG continua só com busca vetorial.
+    """
+    if not env_rerank_enabled():
+        return None
+    try:
+        return load_reranker()
+    except Exception:
+        return None
+
+
 def rag_semantic_search(
     query: str,
     limit: int,
     *,
     project_ids: set[str] | None = None,
+    reranker: object | None = None,
+    rerank_enabled: bool | None = None,
+    rerank_retrieve_k: int | None = None,
 ) -> list[dict]:
     """
-    Executa uma busca semântica usando o backend txtai em cache.
+    Executa busca semântica (e rerank opcional) usando backends em cache.
 
-    Separa responsabilidades: ``_txtai_backend_cached`` gerencia o ciclo de
-    vida do modelo (carregamento caro, feito uma vez); esta função apenas
-    executa a busca (barata, feita a cada pergunta).
+    ``_txtai_backend_cached`` gerencia o índice vetorial; ``_rag_reranker_cached``
+    gerencia o cross-encoder quando o rerank está ativo.
     """
     if not index_ready():
         return []
@@ -231,7 +254,28 @@ def rag_semantic_search(
     emb = _txtai_backend_cached(mt)
     if emb is None:
         return []
-    return search_with_backend(emb, query, limit, project_ids=project_ids)
+
+    q = (query or "").strip()
+    if not q:
+        return []
+
+    tk = max(int(limit), 1)
+    use_rerank = env_rerank_enabled() if rerank_enabled is None else bool(rerank_enabled)
+    if reranker is None and use_rerank:
+        reranker = _rag_reranker_cached()
+    use_rerank = use_rerank and reranker is not None
+
+    retrieve_k = default_retrieve_k(tk, rerank_retrieve_k) if use_rerank else tk
+    hits = search_with_backend(
+        emb,
+        q,
+        tk,
+        project_ids=project_ids,
+        retrieve_limit=retrieve_k if use_rerank else None,
+    )
+    if use_rerank and hits:
+        hits = rerank_hits(q, hits, reranker=reranker, top_k=tk)
+    return hits
 
 
 @st.cache_resource
@@ -334,6 +378,8 @@ def _run_chat_via_crew(
     use_ml: bool,
     rag_top_k: int,
     rag_project_ids: set[str] | None,
+    rag_rerank_enabled: bool,
+    rag_rerank_retrieve_k: int | None,
     max_tokens: int,
     max_history_turns: int,
     use_thinking: bool,
@@ -359,8 +405,11 @@ def _run_chat_via_crew(
     ml_available = use_ml and chat_ml_model_available()
 
     rag_backend = None
+    rag_reranker = None
     if documents_available:
         rag_backend = _txtai_backend_cached(index_mtime())
+        if rag_rerank_enabled:
+            rag_reranker = _rag_reranker_cached()
 
     ml_bundle = None
     ml_path: Path | None = None
@@ -389,6 +438,13 @@ def _run_chat_via_crew(
             rag_backend=rag_backend,
             rag_top_k=int(rag_top_k),
             rag_project_ids=rag_project_ids,
+            rag_reranker=rag_reranker,
+            rag_rerank_enabled=bool(rag_rerank_enabled and rag_reranker is not None),
+            rag_rerank_retrieve_k=rag_rerank_retrieve_k,
+            force_routes=bool(st.session_state.get("dev_chat_override")),
+            force_use_rag=bool(use_rag),
+            force_use_olap=bool(use_olap),
+            force_use_ml=bool(use_ml),
             documents_available=documents_available,
             spreadsheets_available=spreadsheets_available,
             ml_available=ml_available,
@@ -1071,6 +1127,8 @@ def _tab_rag_dev() -> None:
 
     st.markdown(
         f"- Modelo de embedding: `{EMBEDDING_MODEL_ID}`\n"
+        f"- Reranker: `{RERANKER_MODEL_ID}` — **ativo:** "
+        f"{'sim' if env_rerank_enabled() else 'não (RAG_RERANK_ENABLED=0)'}\n"
         f"- Índice: `{txtai_index_path()}` — **pronto:** {'sim' if index_ready() else 'não'}"
     )
 
@@ -1084,23 +1142,43 @@ def _tab_rag_dev() -> None:
         key="dev_rag_search_query",
     )
     top_k = st.slider("Top-K", min_value=1, max_value=25, value=8, key="dev_rag_search_top_k")
+    use_rerank = st.toggle(
+        "Aplicar rerank",
+        value=env_rerank_enabled(),
+        key="dev_rag_search_rerank",
+    )
+    rerank_k = st.number_input(
+        "Candidatos antes do rerank (0 = auto)",
+        min_value=0,
+        max_value=50,
+        value=0,
+        key="dev_rag_search_rerank_k",
+    )
 
     if st.button("Executar busca", type="primary", key="btn_rag_dev_search"):
         if not q.strip():
             st.error("Informe uma consulta.")
         else:
             with st.spinner("Buscando…"):
-                hits = rag_semantic_search(q, top_k)
+                hits = rag_semantic_search(
+                    q,
+                    top_k,
+                    rerank_enabled=use_rerank,
+                    rerank_retrieve_k=int(rerank_k) or None,
+                )
             if not hits:
                 st.info("Nenhum resultado para esta consulta.")
             else:
                 st.metric("Resultados", len(hits))
                 for i, h in enumerate(hits, start=1):
                     score = h.get("score")
+                    retrieval = h.get("retrieval_score")
                     # "cited" contém o texto completo com prefixo de projeto/arquivo.
                     # Cai em "text" para compatibilidade com índices antigos.
                     body = (h.get("cited") or h.get("text") or "").strip()
                     title = f"#{i} · score={score}"
+                    if retrieval is not None and retrieval != score:
+                        title += f" · retrieval={retrieval}"
                     with st.expander(title, expanded=(i <= 3)):
                         st.markdown(body if body else "_(sem texto)_")
                         with st.popover("JSON bruto"):
@@ -1165,6 +1243,10 @@ def _chat_effective_options() -> dict:
         "use_olap": use_olap and has_ingested_tables(),
         "use_ml": use_ml and chat_ml_model_available(),
         "rag_top_k": int(st.session_state.get("dev_chat_rag_top_k", 6)),
+        "rag_rerank_enabled": bool(
+            st.session_state.get("dev_chat_rag_rerank", env_rerank_enabled())
+        ),
+        "rag_rerank_retrieve_k": int(st.session_state.get("dev_chat_rag_rerank_k", 0)) or None,
         "max_tokens": int(
             st.session_state.get("dev_chat_max_tokens", chat_max_tokens(ml_route=False))
         ),
@@ -1244,6 +1326,27 @@ def _tab_chat_dev_controls() -> None:
     with c4:
         st.number_input("Trechos", 1, 20, 6, key="dev_chat_rag_top_k")
     with c5:
+        st.toggle(
+            "Rerank RAG",
+            value=env_rerank_enabled(),
+            key="dev_chat_rag_rerank",
+            help=(
+                "Reordena candidatos com cross-encoder antes de enviar ao LLM. "
+                f"Modelo: `{RERANKER_MODEL_ID}`"
+            ),
+        )
+    with c6:
+        st.number_input(
+            "Candidatos (rerank)",
+            0,
+            50,
+            0,
+            key="dev_chat_rag_rerank_k",
+            help="0 = automático (max(top_k×4, 20)). Quantos trechos buscar antes do rerank.",
+        )
+
+    c7, c8, c9 = st.columns(3)
+    with c7:
         st.number_input(
             "Máx. tokens",
             256,
@@ -1253,7 +1356,7 @@ def _tab_chat_dev_controls() -> None:
             key="dev_chat_max_tokens",
             help="Na rota de predição ML, o teto efetivo é CHAT_ML_MAX_TOKENS (padrão 768).",
         )
-    with c6:
+    with c8:
         st.number_input(
             "Turnos no histórico",
             1,
@@ -1291,6 +1394,8 @@ def _tab_chat() -> None:
     use_olap = opts["use_olap"]
     use_ml = opts["use_ml"]
     rag_top_k = opts["rag_top_k"]
+    rag_rerank_enabled = opts["rag_rerank_enabled"]
+    rag_rerank_retrieve_k = opts["rag_rerank_retrieve_k"]
     max_tokens = opts["max_tokens"]
     max_history_turns = opts["max_history_turns"]
     use_thinking = opts["use_thinking"]
@@ -1364,6 +1469,8 @@ def _tab_chat() -> None:
                 use_ml=use_ml,
                 rag_top_k=rag_top_k,
                 rag_project_ids=rag_project_ids,
+                rag_rerank_enabled=rag_rerank_enabled,
+                rag_rerank_retrieve_k=rag_rerank_retrieve_k,
                 max_tokens=max_tokens,
                 max_history_turns=max_history_turns,
                 use_thinking=use_thinking,

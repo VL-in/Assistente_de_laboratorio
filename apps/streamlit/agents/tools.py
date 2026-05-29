@@ -29,7 +29,13 @@ from ml.chat_infer import MlInferResult, run_chat_ml_inference
 from ml.paths import chat_ml_model_available, chat_ml_model_path
 from ml.training import ModelBundle
 from olap import OlapQueryResult, has_ingested_tables, run_nl_olap_query
-from rag import format_context_for_llm, index_ready, search_with_backend
+from rag import (
+    default_retrieve_k,
+    format_context_for_llm,
+    index_ready,
+    rerank_hits,
+    search_with_backend,
+)
 
 
 @dataclass
@@ -63,6 +69,9 @@ def rag_search_tool(
     backend: object | None,
     top_k: int = 6,
     project_ids: set[str] | None = None,
+    reranker: object | None = None,
+    rerank_enabled: bool = True,
+    rerank_retrieve_k: int | None = None,
 ) -> ToolResult:
     """
     Busca semântica no índice txtai e formata contexto citável.
@@ -75,11 +84,17 @@ def rag_search_tool(
         Instância ``Embeddings`` já carregada — vinda do cache do Streamlit
         (``_txtai_backend_cached``). Quando ``None``, retorna ``ok=False``.
     top_k:
-        Quantos chunks recuperar. Quando ``project_ids`` é informado, o backend
-        busca ``top_k * 3`` candidatos antes de filtrar — ver
-        ``rag.search_with_backend``.
+        Quantos chunks entregar ao LLM após busca (e rerank, se ativo).
     project_ids:
         Restringe a busca a um subconjunto de ``project_id``.
+    reranker:
+        Instância ``CrossEncoder`` em cache. Quando ``None`` ou
+        ``rerank_enabled=False``, usa só a ordem da busca vetorial.
+    rerank_enabled:
+        Liga/desliga o rerank sem descartar o modelo em cache.
+    rerank_retrieve_k:
+        Candidatos antes do rerank. ``None`` ou ``0`` usa heurística
+        ``max(top_k * 4, 20)``.
     """
     if not index_ready():
         return ToolResult(
@@ -100,9 +115,20 @@ def rag_search_tool(
     if not q:
         return ToolResult(name="rag", ok=False, error="Consulta vazia.", summary="vazio")
 
+    tk = int(top_k)
+    use_rerank = bool(rerank_enabled and reranker is not None)
+    retrieve_k = default_retrieve_k(tk, rerank_retrieve_k) if use_rerank else tk
+
     hits: list[dict] = search_with_backend(
-        backend, q, int(top_k), project_ids=project_ids
+        backend,
+        q,
+        tk,
+        project_ids=project_ids,
+        retrieve_limit=retrieve_k if use_rerank else None,
     )
+    if use_rerank and hits:
+        hits = rerank_hits(q, hits, reranker=reranker, top_k=tk)
+
     if not hits:
         return ToolResult(
             name="rag",
@@ -124,8 +150,13 @@ def rag_search_tool(
         context_for_llm=(
             "### Contexto recuperado dos documentos do laboratório\n" + ctx + instructions
         ),
-        payload={"hits": hits, "top_k": int(top_k)},
-        summary=f"{len(hits)} evidência(s)",
+        payload={
+            "hits": hits,
+            "top_k": tk,
+            "rerank_enabled": use_rerank,
+            "retrieve_k": retrieve_k if use_rerank else tk,
+        },
+        summary=f"{len(hits)} evidência(s)" + (" · rerank" if use_rerank else ""),
     )
 
 

@@ -40,17 +40,29 @@ from .index_txtai import (
 )
 from .manifest import manifest_exists, manifest_path
 from .paths import ENV_TXTAI_DIR, txtai_data_root, txtai_index_path
+from .rerank import (
+    RERANKER_MODEL_ID,
+    default_retrieve_k,
+    env_rerank_enabled,
+    load_reranker,
+    rerank_hits,
+)
 
 __all__ = [
     "EMBEDDING_MODEL_ID",
+    "RERANKER_MODEL_ID",
     "BuildStats",
     "ENV_TXTAI_DIR",
     "build_index",
+    "default_retrieve_k",
+    "env_rerank_enabled",
     "format_context_for_llm",
     "index_mtime",
     "index_ready",
+    "load_reranker",
     "manifest_exists",
     "manifest_path",
+    "rerank_hits",
     "search_chunks",
     "search_with_backend",
     "txtai_data_root",

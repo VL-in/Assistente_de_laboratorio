@@ -70,6 +70,9 @@ class CrewContext:
     rag_backend: object | None = None
     rag_top_k: int = 6
     rag_project_ids: set[str] | None = None
+    rag_reranker: object | None = None
+    rag_rerank_enabled: bool = True
+    rag_rerank_retrieve_k: int | None = None
     ml_bundle: ModelBundle | None = None
     ml_model_path: Path | None = None
     documents_available: bool = False
@@ -184,6 +187,9 @@ def _run_rag(ctx: CrewContext, trace: HandoffTrace) -> ToolResult:
             backend=ctx.rag_backend,
             top_k=ctx.rag_top_k,
             project_ids=ctx.rag_project_ids,
+            reranker=ctx.rag_reranker,
+            rerank_enabled=ctx.rag_rerank_enabled,
+            rerank_retrieve_k=ctx.rag_rerank_retrieve_k,
         )
         h.set_output(result.summary or ("ok" if result.ok else (result.error or "")))
         hits = result.payload.get("hits") or []
@@ -194,12 +200,15 @@ def _run_rag(ctx: CrewContext, trace: HandoffTrace) -> ToolResult:
                 "arquivo": h_.get("relative_path"),
                 "chunk": h_.get("chunk_index"),
                 "score": h_.get("score"),
+                "retrieval_score": h_.get("retrieval_score"),
             }
             for i, h_ in enumerate(hits, start=1)
         ]
         h.set_metadata(
             ok=result.ok,
             top_k=ctx.rag_top_k,
+            rerank_enabled=result.payload.get("rerank_enabled"),
+            retrieve_k=result.payload.get("retrieve_k"),
             evidence_count=len(hits),
             project_ids=sorted(ctx.rag_project_ids) if ctx.rag_project_ids else None,
             evidence_files=evidence_files,

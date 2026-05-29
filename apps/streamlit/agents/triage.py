@@ -20,10 +20,12 @@ from openai import OpenAI
 
 from agents.intent_rules import (
     ML_HINT,
+    ML_INFERENCE_HINT,
     is_social_only,
     parse_router_json,
     rule_fallback,
 )
+from ml.sequence_embeddings import extract_sequences_from_text
 from qwen35_inference import (
     DEFAULT_ROUTER_MAX_TOKENS,
     PROFILE_CHAT_ROUTER,
@@ -170,7 +172,10 @@ def classify_intent(
             reason=decision.reason,
         )
 
-    if ml_available and ML_HINT.search(msg):
+    if ml_available and (
+        ML_INFERENCE_HINT.search(msg)
+        or (ML_HINT.search(msg) and extract_sequences_from_text(msg))
+    ):
         decision = TriageDecision(
             use_rag=False,
             use_olap=False,

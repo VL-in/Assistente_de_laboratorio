@@ -173,6 +173,12 @@ def build_messages(
             }
         )
 
+    current = (user_message or "").strip()
+    if current:
+        last = trimmed_history[-1] if trimmed_history else None
+        if not last or last.get("role") != "user" or str(last.get("content") or "").strip() != current:
+            api_messages.append({"role": "user", "content": current})
+
     return SynthesizerInput(
         system_prompt=system_prompt,
         messages=api_messages,

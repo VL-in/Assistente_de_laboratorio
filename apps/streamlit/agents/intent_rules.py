@@ -52,6 +52,15 @@ ML_HINT = re.compile(
     re.IGNORECASE,
 )
 
+# Verbos que indicam pedido de inferência (não só menção ao tema ML).
+ML_INFERENCE_HINT = re.compile(
+    r"\b(?:"
+    r"predi[çc][ãa]o|predizer|prever|previs[ãa]o|infer[êe]ncia|inferir|"
+    r"estim(?:e|ar)\s+(?:a\s+)?afinidade|rodar\s+o\s+modelo"
+    r")\b",
+    re.IGNORECASE,
+)
+
 # Vocabulário de análise tabular: contagens, médias, agrupamentos.
 TABULAR_HINT = re.compile(
     r"\b(?:"

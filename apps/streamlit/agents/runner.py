@@ -98,6 +98,13 @@ def run_crew_chat(
     rag_backend: object | None,
     rag_top_k: int = 6,
     rag_project_ids: set[str] | None = None,
+    rag_reranker: object | None = None,
+    rag_rerank_enabled: bool = True,
+    rag_rerank_retrieve_k: int | None = None,
+    force_routes: bool = False,
+    force_use_rag: bool = False,
+    force_use_olap: bool = False,
+    force_use_ml: bool = False,
     documents_available: bool = False,
     spreadsheets_available: bool = False,
     ml_available: bool = False,
@@ -148,6 +155,9 @@ def run_crew_chat(
         rag_backend=rag_backend,
         rag_top_k=int(rag_top_k),
         rag_project_ids=rag_project_ids,
+        rag_reranker=rag_reranker,
+        rag_rerank_enabled=bool(rag_rerank_enabled),
+        rag_rerank_retrieve_k=rag_rerank_retrieve_k,
         ml_bundle=ml_bundle,
         ml_model_path=ml_model_path,
         documents_available=bool(documents_available),
@@ -157,6 +167,14 @@ def run_crew_chat(
     )
 
     triage = run_triage(ctx, trace=trace)
+    if force_routes:
+        triage.decision = TriageDecision(
+            use_rag=bool(force_use_rag and documents_available),
+            use_olap=bool(force_use_olap and spreadsheets_available),
+            use_ml=bool(force_use_ml and ml_available),
+            source="dev_force",
+            reason="configuração manual do chat (dev)",
+        )
     tool_results = dispatch_specialists(ctx, triage, trace=trace)
 
     history_with_user = list(history or []) + [{"role": "user", "content": user_message}]

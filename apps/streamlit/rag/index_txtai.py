@@ -790,6 +790,7 @@ def search_with_backend(
     limit: int,
     *,
     project_ids: set[str] | None = None,
+    retrieve_limit: int | None = None,
 ) -> list[dict]:
     """
     Executa uma busca semântica usando uma instância de ``Embeddings`` já carregada.
@@ -798,8 +799,11 @@ def search_with_backend(
     recarregar o modelo de ~500 MB a cada pergunta do usuário. A instância deve
     ser gerenciada pelo chamador (ex.: ``st.cache_resource`` no Streamlit).
 
-    Quando ``project_ids`` é informado, busca ``limit * 3`` candidatos e filtra
+    Quando ``project_ids`` é informado, busca ``limit * 5`` candidatos e filtra
     por projeto antes de truncar — compensa hits de outros projetos no top-K bruto.
+
+    ``retrieve_limit`` (opcional) expande o pool de candidatos antes de um rerank
+    externo — ex.: buscar 24 trechos e depois reordenar para ``limit=6``.
 
     Implementação
     -------------
@@ -818,7 +822,8 @@ def search_with_backend(
     q = (query or "").strip()
     if not q:
         return []
-    fetch_limit = limit * 3 if project_ids else limit
+    output_limit = int(retrieve_limit) if retrieve_limit is not None else int(limit)
+    fetch_limit = output_limit * 5 if project_ids else output_limit
 
     sql = (
         f"select {', '.join(_RAG_SQL_COLUMNS)} "
@@ -833,7 +838,7 @@ def search_with_backend(
         hits = format_search_results(backend.search(q, fetch_limit))  # type: ignore[attr-defined]
 
     hits = filter_hits_by_project(hits, project_ids)
-    return hits[:limit]
+    return hits[:output_limit]
 
 
 # ── Formatação de contexto para o LLM ───────────────────────────────────────
