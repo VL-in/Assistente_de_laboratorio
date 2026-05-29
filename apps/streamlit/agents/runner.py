@@ -19,9 +19,11 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from langfuse import observe
 from openai import OpenAI
 
 from agents.crew import CrewContext, dispatch_specialists, run_triage
+from observability.langfuse_client import langfuse_enabled, langfuse_span
 from agents.greeter import handle_greeting
 from agents.handoff import HandoffTrace
 from agents.synthesizer import SynthesizerInput, build_messages
@@ -86,6 +88,7 @@ class CrewRunResult:
         return olap.payload.get("sql")
 
 
+@observe(name="crew-pipeline", capture_input=False, capture_output=False)
 def run_crew_chat(
     user_message: str,
     *,
@@ -113,9 +116,20 @@ def run_crew_chat(
     ``max_history_turns``/``max_chars_per_message``) para chamar
     ``create_chat_completion(stream=True)`` e ``iter_stream_answer_text``.
     """
+    if langfuse_enabled():
+        from langfuse import get_client
+
+        get_client().update_current_span(
+            input={"user_message": user_message.strip()[:2000]},
+            metadata={"model": model},
+        )
+
     trace = HandoffTrace()
 
-    with trace.start("Greeter", input_summary=user_message) as h:
+    with trace.start("Greeter", input_summary=user_message) as h, langfuse_span(
+        "Greeter",
+        input_data={"message": user_message[:500]},
+    ):
         greeting = handle_greeting(user_message)
         if greeting is not None:
             h.set_output(greeting)
@@ -146,7 +160,10 @@ def run_crew_chat(
     tool_results = dispatch_specialists(ctx, triage, trace=trace)
 
     history_with_user = list(history or []) + [{"role": "user", "content": user_message}]
-    with trace.start("Synthesizer (build prompt)", input_summary=user_message) as h:
+    with trace.start("Synthesizer (build prompt)", input_summary=user_message) as h, langfuse_span(
+        "Synthesizer (build prompt)",
+        input_data={"user_message": user_message[:500]},
+    ):
         synth = build_messages(
             user_message=user_message,
             history=history_with_user,

@@ -51,6 +51,23 @@ def _bootstrap_dotenv() -> None:
 _bootstrap_dotenv()
 
 
+def _bootstrap_langfuse() -> None:
+    """Instrumenta o SDK OpenAI quando as chaves Langfuse estiverem no ambiente."""
+    try:
+        from observability.langfuse_client import (
+            ensure_openai_tracing,
+            normalize_langfuse_env,
+        )
+
+        normalize_langfuse_env()
+        ensure_openai_tracing()
+    except ImportError:
+        pass
+
+
+_bootstrap_langfuse()
+
+
 def normalize_openai_base_url(url: str) -> str:
     """Garante sufixo ``/v1`` exigido pelo SDK OpenAI."""
     u = url.strip().rstrip("/")

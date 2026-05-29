@@ -13,3 +13,6 @@ apps/streamlit/.ml_data/
 # Artefatos locais
 _msg.txt
 *.pkl
+
+# Skill Langfuse copiado localmente para o Cursor (instale via npx skills add)
+.cursor/skills/

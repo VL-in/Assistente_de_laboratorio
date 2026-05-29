@@ -297,6 +297,7 @@ def create_chat_completion(
     profile: GenerationProfile,
     max_tokens: int,
     stream: bool = False,
+    generation_name: str | None = None,
 ) -> Any:
     """
     Chama a API OpenAI-compatível (OpenRouter, OpenAI, vLLM, etc.).
@@ -304,6 +305,9 @@ def create_chat_completion(
     Quando o modelo é Qwen3.5, anexamos ``extra_body`` com
     ``chat_template_kwargs.enable_thinking`` — se o provider não aceitar (alguns
     serviços recusam o campo), repetimos a chamada sem ele.
+
+    ``generation_name`` vira o atributo ``name`` da geração no Langfuse
+    (ex.: ``crew-triage``, ``crew-synthesizer``) — facilita filtrar traces.
     """
     kwargs = build_completion_kwargs(
         model=model,
@@ -311,6 +315,8 @@ def create_chat_completion(
         max_tokens=max_tokens,
         stream=stream,
     )
+    if generation_name:
+        kwargs["name"] = generation_name
     try:
         return client.chat.completions.create(messages=messages, **kwargs)
     except Exception:

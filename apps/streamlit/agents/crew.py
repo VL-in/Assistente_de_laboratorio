@@ -20,11 +20,14 @@ agente "Auditor" da Fase 4).
 
 from __future__ import annotations
 
+import contextvars
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from openai import OpenAI
+
+from observability.langfuse_client import langfuse_enabled, langfuse_span
 
 from agents.handoff import HandoffTrace
 from agents.tools import (
@@ -77,7 +80,10 @@ class CrewContext:
 
 def run_triage(ctx: CrewContext, *, trace: HandoffTrace) -> TriageOutput:
     """Roda o Triage Agent e registra o handoff."""
-    with trace.start("Triage", input_summary=ctx.user_message) as h:
+    with trace.start("Triage", input_summary=ctx.user_message) as h, langfuse_span(
+        "Triage",
+        input_data={"user_message": ctx.user_message[:500]},
+    ):
         decision = classify_intent(
             ctx.user_message,
             history=ctx.history,
@@ -134,8 +140,14 @@ def dispatch_specialists(
 
     results: dict[str, ToolResult] = {}
     if ctx.parallel_tools and len(jobs) > 1:
+        otel_ctx = contextvars.copy_context() if langfuse_enabled() else None
         with ThreadPoolExecutor(max_workers=len(jobs)) as ex:
-            futures = {ex.submit(fn): name for name, fn in jobs}
+            if otel_ctx is not None:
+                futures = {
+                    ex.submit(otel_ctx.run, fn): name for name, fn in jobs
+                }
+            else:
+                futures = {ex.submit(fn): name for name, fn in jobs}
             for fut in futures:
                 name = futures[fut]
                 try:
@@ -162,7 +174,11 @@ def dispatch_specialists(
 
 
 def _run_rag(ctx: CrewContext, trace: HandoffTrace) -> ToolResult:
-    with trace.start("RAG Tool", input_summary=ctx.user_message) as h:
+    with trace.start("RAG Tool", input_summary=ctx.user_message) as h, langfuse_span(
+        "RAG Tool",
+        as_type="tool",
+        input_data={"query": ctx.user_message[:500]},
+    ):
         result = rag_search_tool(
             ctx.user_message,
             backend=ctx.rag_backend,
@@ -194,7 +210,11 @@ def _run_rag(ctx: CrewContext, trace: HandoffTrace) -> ToolResult:
 
 
 def _run_olap(ctx: CrewContext, trace: HandoffTrace) -> ToolResult:
-    with trace.start("OLAP Tool", input_summary=ctx.user_message) as h:
+    with trace.start("OLAP Tool", input_summary=ctx.user_message) as h, langfuse_span(
+        "OLAP Tool",
+        as_type="tool",
+        input_data={"question": ctx.user_message[:500]},
+    ):
         if ctx.client is None or not ctx.model:
             result = ToolResult(
                 name="olap",
@@ -222,7 +242,11 @@ def _run_olap(ctx: CrewContext, trace: HandoffTrace) -> ToolResult:
 
 
 def _run_ml(ctx: CrewContext, trace: HandoffTrace) -> ToolResult:
-    with trace.start("ML Tool", input_summary=ctx.user_message) as h:
+    with trace.start("ML Tool", input_summary=ctx.user_message) as h, langfuse_span(
+        "ML Tool",
+        as_type="tool",
+        input_data={"message": ctx.user_message[:500]},
+    ):
         if ctx.client is None or not ctx.model:
             result = ToolResult(
                 name="ml",

@@ -273,6 +273,7 @@ def generate_sql(
             profile=PROFILE_OLAP_SQL,
             max_tokens=max_tokens,
             stream=False,
+            generation_name="olap-nl-to-sql",
         )
         raw = (completion.choices[0].message.content or "").strip()
     except Exception as exc:  # noqa: BLE001

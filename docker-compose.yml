@@ -30,6 +30,14 @@ services:
       # OPENAI_API_KEY fica como fallback caso alguma lib filha (CrewAI/LiteLLM)
       # exija a variável padrão da OpenAI; em geral é a mesma chave do OpenRouter.
       OPENAI_API_KEY: ${OPENROUTER_API_KEY:-${OPENAI_API_KEY:-}}
+      # Observabilidade LLM (Langfuse) — opcional; ver .env.docker.example
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_BASE_URL: ${LANGFUSE_BASE_URL:-https://cloud.langfuse.com}
+      LANGFUSE_TRACING_ENVIRONMENT: ${LANGFUSE_TRACING_ENVIRONMENT:-development}
+      LANGFUSE_RELEASE: ${LANGFUSE_RELEASE:-}
+      LANGFUSE_TAGS: ${LANGFUSE_TAGS:-}
+      LANGFUSE_ENABLED: ${LANGFUSE_ENABLED:-1}
     volumes:
       # Pasta do host com um subdiretório por projeto de P&D (somente leitura)
       - type: bind

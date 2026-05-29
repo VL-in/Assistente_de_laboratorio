@@ -46,7 +46,7 @@ Responda APENAS com JSON válido (sem markdown, sem explicação):
 {"documents": true|false, "spreadsheets": true|false, "ml_prediction": true|false, "reason": "frase curta em pt-BR"}
 
 Regras:
-- ml_prediction=true só com pedido EXPLÍCITO de predição/inferência ("rode o modelo", "preveja log_Aff", "estime a afinidade").
+- ml_prediction=true só com pedido de predição/inferência quando o usuário fornecer as três sequencias de aminoácidos. Os nomes podem variar, mas devem corresponder algo similar a Heavy Chain ou H (Ab_heavy_chain_seq), Light Chain ou L (Ab_light_chain_seq) ou Ag (Ag_seq).
 - Quando ml_prediction=true, force documents=false e spreadsheets=false (a predição é autocontida).
 - Para saudação/agradecimento/conversa social: tudo false e reason="saudação".
 - Vários especialistas podem ser true ao mesmo tempo se a pergunta misturar tópicos."""
@@ -212,6 +212,7 @@ def _classify_with_llm(
             profile=PROFILE_CHAT_ROUTER,
             max_tokens=DEFAULT_ROUTER_MAX_TOKENS,
             stream=False,
+            generation_name="crew-triage",
         )
         raw = (completion.choices[0].message.content or "").strip()
     except Exception:

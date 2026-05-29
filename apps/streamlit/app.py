@@ -27,6 +27,7 @@ import platform
 import sys
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 
 import pandas as pd
@@ -43,6 +44,12 @@ from llm_config import (
     llm_runtime_config,
     normalize_openai_base_url,
     openrouter_default_headers,
+)
+from observability import (
+    chat_observation_context,
+    crew_route_tags,
+    langfuse_status,
+    update_chat_trace_output,
 )
 from agents import (
     CrewRunResult,
@@ -259,6 +266,14 @@ def _openai_client() -> OpenAI:
     return _openai_client_cached(base, api_key, timeout_s, headers_items)
 
 
+def _langfuse_session_id() -> str:
+    """ID estável por sessão Streamlit — agrupa traces no painel Sessions."""
+    key = "langfuse_session_id"
+    if key not in st.session_state:
+        st.session_state[key] = str(uuid.uuid4())
+    return str(st.session_state[key])
+
+
 def _check_openai_compatible_models(base_url: str, *, timeout_s: float = 5.0) -> tuple[bool, str]:
     """
     GET ``{base}/v1/models`` — compatível com OpenRouter (e qualquer endpoint
@@ -428,6 +443,7 @@ def _run_chat_via_crew(
         st.session_state.chat_messages.append(
             {"role": "assistant", "content": crew_result.greeting_response}
         )
+        update_chat_trace_output(crew_result.greeting_response)
         if show_trace:
             _render_handoff_trace(crew_result)
         return
@@ -493,6 +509,7 @@ def _run_chat_via_crew(
                         profile=chat_profile,
                         max_tokens=int(reply_max_tokens),
                         stream=True,
+                        generation_name="crew-synthesizer",
                     )
 
                     def _token_stream():
@@ -509,6 +526,7 @@ def _run_chat_via_crew(
                             profile=chat_profile,
                             max_tokens=int(reply_max_tokens),
                             stream=False,
+                            generation_name="crew-synthesizer",
                         )
                     raw = (completion.choices[0].message.content or "").strip()
                     answer = strip_thinking_blocks(raw)
@@ -516,6 +534,7 @@ def _run_chat_via_crew(
                 st.session_state.chat_messages.append(
                     {"role": "assistant", "content": answer}
                 )
+                update_chat_trace_output(answer)
             except Exception as exc:
                 st.error(f"Não foi possível obter resposta do assistente: {exc}")
                 if (
@@ -1297,6 +1316,7 @@ def _tab_chat() -> None:
     with actions:
         if st.button("Limpar", key="btn_clear_chat", use_container_width=True):
             st.session_state.chat_messages = []
+            st.session_state.pop("langfuse_session_id", None)
             st.rerun()
 
     chat_box = st.container(height=460, border=True)
@@ -1324,24 +1344,34 @@ def _tab_chat() -> None:
 
         # Pipeline multiagente: Triage → Tools (paralelas) → Synthesizer.
         # Greeter rule-based curto-circuita saudações sem chamar o LLM.
-        _run_chat_via_crew(
-            prompt=prompt,
-            history_before=history_before,
-            client=client,
-            model=model,
-            use_rag=use_rag,
-            use_olap=use_olap,
-            use_ml=use_ml,
-            rag_top_k=rag_top_k,
-            rag_project_ids=rag_project_ids,
-            max_tokens=max_tokens,
-            max_history_turns=max_history_turns,
-            use_thinking=use_thinking,
-            use_stream=use_stream,
-            show_dev_details=show_dev_details,
-            show_trace=show_trace,
-            chat_box=chat_box,
-        )
+        with chat_observation_context(
+            session_id=_langfuse_session_id(),
+            input_text=prompt,
+            metadata={"model": model},
+            tags=crew_route_tags(
+                use_rag=use_rag,
+                use_olap=use_olap,
+                use_ml=use_ml,
+            ),
+        ):
+            _run_chat_via_crew(
+                prompt=prompt,
+                history_before=history_before,
+                client=client,
+                model=model,
+                use_rag=use_rag,
+                use_olap=use_olap,
+                use_ml=use_ml,
+                rag_top_k=rag_top_k,
+                rag_project_ids=rag_project_ids,
+                max_tokens=max_tokens,
+                max_history_turns=max_history_turns,
+                use_thinking=use_thinking,
+                use_stream=use_stream,
+                show_dev_details=show_dev_details,
+                show_trace=show_trace,
+                chat_box=chat_box,
+            )
 
 
 def _tab_desenvolvimento(
@@ -1562,6 +1592,32 @@ def _tab_diagnostico(root: Path, root_ok: bool, root_msg: str) -> None:
             st.code(detail, language="text")
         else:
             st.error(detail)
+
+    st.subheader("Observabilidade (Langfuse)")
+    lf = langfuse_status()
+    if lf["enabled"]:
+        st.success(
+            "Langfuse **ativo** — cada turno do chat envia traces para o projeto "
+            f"configurado (`{lf['base_url']}`)."
+        )
+        st.caption(
+            f"Sessão Streamlit atual: `{_langfuse_session_id()}` · "
+            f"ambiente: `{lf['environment']}`"
+            + (f" · release: `{lf['release']}`" if lf["release"] else "")
+        )
+        if lf["tags"]:
+            st.caption(f"Tags: {', '.join(lf['tags'])}")
+    else:
+        st.info(
+            "Langfuse **inativo**. Defina `LANGFUSE_PUBLIC_KEY` e `LANGFUSE_SECRET_KEY` "
+            "no `.env` (chaves em https://cloud.langfuse.com → Settings → API Keys) "
+            "e recrie o contêiner. Use `LANGFUSE_ENABLED=0` para desligar sem apagar as chaves."
+        )
+        st.caption(
+            "Chaves detectadas: "
+            f"pública={'sim' if lf['public_key_set'] else 'não'} · "
+            f"secreta={'sim' if lf['secret_key_set'] else 'não'}"
+        )
 
 
 # ── Ponto de entrada ─────────────────────────────────────────────────────────

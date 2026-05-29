@@ -301,6 +301,7 @@ def extract_prediction_rows(
             profile=PROFILE_CHAT_ROUTER,
             max_tokens=_EXTRACT_MAX_TOKENS,
             stream=False,
+            generation_name="ml-feature-extract",
         )
         raw = (completion.choices[0].message.content or "").strip()
     except Exception as exc:
