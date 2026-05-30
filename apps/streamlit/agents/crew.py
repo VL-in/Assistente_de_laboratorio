@@ -71,7 +71,6 @@ class CrewContext:
     rag_top_k: int = 6
     rag_project_ids: set[str] | None = None
     rag_reranker: object | None = None
-    rag_rerank_enabled: bool = True
     rag_rerank_retrieve_k: int | None = None
     ml_bundle: ModelBundle | None = None
     ml_model_path: Path | None = None
@@ -188,7 +187,6 @@ def _run_rag(ctx: CrewContext, trace: HandoffTrace) -> ToolResult:
             top_k=ctx.rag_top_k,
             project_ids=ctx.rag_project_ids,
             reranker=ctx.rag_reranker,
-            rerank_enabled=ctx.rag_rerank_enabled,
             rerank_retrieve_k=ctx.rag_rerank_retrieve_k,
         )
         h.set_output(result.summary or ("ok" if result.ok else (result.error or "")))

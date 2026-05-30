@@ -101,7 +101,6 @@ class RagSearchToolRerankTests(unittest.TestCase):
             backend=MagicMock(),
             top_k=4,
             reranker=MagicMock(),
-            rerank_enabled=True,
             rerank_retrieve_k=20,
         )
 
@@ -116,7 +115,7 @@ class RagSearchToolRerankTests(unittest.TestCase):
     @patch("agents.tools.rerank_hits")
     @patch("agents.tools.search_with_backend")
     @patch("agents.tools.index_ready", return_value=True)
-    def test_rag_tool_skips_rerank_when_disabled(
+    def test_rag_tool_skips_rerank_without_model(
         self,
         _ready: MagicMock,
         mock_search: MagicMock,
@@ -130,8 +129,7 @@ class RagSearchToolRerankTests(unittest.TestCase):
             "pergunta",
             backend=MagicMock(),
             top_k=4,
-            reranker=MagicMock(),
-            rerank_enabled=False,
+            reranker=None,
         )
 
         mock_rerank.assert_not_called()

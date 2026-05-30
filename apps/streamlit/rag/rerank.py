@@ -26,7 +26,7 @@ RERANK_TEXT_MAX_CHARS = 2000
 
 
 def env_rerank_enabled() -> bool:
-    """``RAG_RERANK_ENABLED=0`` desliga o rerank (útil em dev sem baixar o modelo)."""
+    """``RAG_RERANK_ENABLED=0`` desliga o rerank (apenas escape hatch em dev/CI)."""
     return os.environ.get(ENV_RERANK_ENABLED, "1").strip().lower() not in (
         "0",
         "false",

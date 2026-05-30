@@ -70,7 +70,6 @@ def rag_search_tool(
     top_k: int = 6,
     project_ids: set[str] | None = None,
     reranker: object | None = None,
-    rerank_enabled: bool = True,
     rerank_retrieve_k: int | None = None,
 ) -> ToolResult:
     """
@@ -88,10 +87,7 @@ def rag_search_tool(
     project_ids:
         Restringe a busca a um subconjunto de ``project_id``.
     reranker:
-        Instância ``CrossEncoder`` em cache. Quando ``None`` ou
-        ``rerank_enabled=False``, usa só a ordem da busca vetorial.
-    rerank_enabled:
-        Liga/desliga o rerank sem descartar o modelo em cache.
+        Instância ``CrossEncoder`` em cache. Quando ``None``, usa só busca vetorial.
     rerank_retrieve_k:
         Candidatos antes do rerank. ``None`` ou ``0`` usa heurística
         ``max(top_k * 4, 20)``.
@@ -116,7 +112,7 @@ def rag_search_tool(
         return ToolResult(name="rag", ok=False, error="Consulta vazia.", summary="vazio")
 
     tk = int(top_k)
-    use_rerank = bool(rerank_enabled and reranker is not None)
+    use_rerank = reranker is not None
     retrieve_k = default_retrieve_k(tk, rerank_retrieve_k) if use_rerank else tk
 
     hits: list[dict] = search_with_backend(
