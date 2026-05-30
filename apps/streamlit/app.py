@@ -47,9 +47,9 @@ from llm_config import (
 )
 from observability import (
     chat_observation_context,
-    crew_route_tags,
     langfuse_status,
     update_chat_trace_output,
+    update_chat_trace_route,
 )
 from agents import (
     CrewRunResult,
@@ -454,6 +454,11 @@ def _run_chat_via_crew(
             max_history_turns=int(pre_hist_turns),
             max_chars_per_message=int(pre_hist_chars),
         )
+
+    update_chat_trace_route(
+        greeting=crew_result.greeting_response is not None,
+        tool_results=crew_result.tool_results,
+    )
 
     if show_dev_details and crew_result.triage is not None:
         d = crew_result.triage
@@ -1453,11 +1458,7 @@ def _tab_chat() -> None:
             session_id=_langfuse_session_id(),
             input_text=prompt,
             metadata={"model": model},
-            tags=crew_route_tags(
-                use_rag=use_rag,
-                use_olap=use_olap,
-                use_ml=use_ml,
-            ),
+            tags=["feature:chat"],
         ):
             _run_chat_via_crew(
                 prompt=prompt,

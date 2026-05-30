@@ -106,6 +106,54 @@ def crew_route_tags(
     return tags
 
 
+def crew_route_tags_from_execution(
+    *,
+    greeting: bool = False,
+    tool_results: dict[str, Any] | None = None,
+) -> list[str]:
+    """
+    Tags baseadas nas Tools que de fato executaram (não nos toggles da UI).
+
+    Preferir esta função após ``run_crew_chat`` para traces Langfuse fiéis.
+    """
+    tags: list[str] = ["feature:chat"]
+    if greeting:
+        tags.append("route:greeter")
+        return tags
+    executed = set(tool_results or {})
+    use_rag = "rag" in executed
+    use_olap = "olap" in executed
+    use_ml = "ml" in executed
+    if use_rag:
+        tags.append("route:rag")
+    if use_olap:
+        tags.append("route:olap")
+    if use_ml:
+        tags.append("route:ml")
+    if not (use_rag or use_olap or use_ml):
+        tags.append("route:direct")
+    return tags
+
+
+def update_chat_trace_route(
+    *,
+    greeting: bool = False,
+    tool_results: dict[str, Any] | None = None,
+) -> None:
+    """Atualiza tags do trace Langfuse com a rota real executada no turno."""
+    if not langfuse_enabled():
+        return
+    from langfuse import get_client
+
+    tags = crew_route_tags_from_execution(
+        greeting=greeting,
+        tool_results=tool_results,
+    )
+    env_tags = _langfuse_tags()
+    all_tags = list(dict.fromkeys([*tags, *env_tags]))
+    get_client().update_current_trace(tags=all_tags)
+
+
 def langfuse_status() -> dict[str, Any]:
     """Resumo para a aba Desenvolvimento → Diagnóstico."""
     base_url = (

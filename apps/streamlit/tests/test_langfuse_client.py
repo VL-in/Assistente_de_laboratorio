@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from observability.langfuse_client import (
     crew_route_tags,
+    crew_route_tags_from_execution,
     langfuse_enabled,
     langfuse_status,
     normalize_langfuse_env,
@@ -59,6 +60,20 @@ class TestLangfuseClient(unittest.TestCase):
         self.assertIn("feature:chat", tags)
         self.assertIn("route:rag", tags)
         self.assertNotIn("route:olap", tags)
+
+    def test_crew_route_tags_from_execution(self) -> None:
+        tags = crew_route_tags_from_execution(
+            tool_results={"rag": object(), "olap": object()},
+        )
+        self.assertIn("route:rag", tags)
+        self.assertIn("route:olap", tags)
+        self.assertNotIn("route:ml", tags)
+
+        greet = crew_route_tags_from_execution(greeting=True)
+        self.assertIn("route:greeter", greet)
+
+        direct = crew_route_tags_from_execution(tool_results={})
+        self.assertIn("route:direct", direct)
 
     def test_normalize_langfuse_env_host_to_base(self) -> None:
         with patch.dict(
