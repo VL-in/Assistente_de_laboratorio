@@ -56,6 +56,15 @@ class OlapIngestTests(unittest.TestCase):
         self.assertTrue(name.startswith("p_elisa_2024"))
         self.assertIn("dados", name)
 
+    def test_table_name_unique_when_truncated(self) -> None:
+        long_path_a = "a" * 80 + "/file_a.xlsx"
+        long_path_b = "a" * 80 + "/file_b.xlsx"
+        name_a = table_name_for("Proj", long_path_a, "Sheet1")
+        name_b = table_name_for("Proj", long_path_b, "Sheet1")
+        self.assertLessEqual(len(name_a), 120)
+        self.assertLessEqual(len(name_b), 120)
+        self.assertNotEqual(name_a, name_b)
+
     def test_sync_csv_creates_table(self) -> None:
         proj = Path(self._tmpdir.name) / "ProjA"
         proj.mkdir()

@@ -11,6 +11,7 @@ Após cada sincronização, índices DuckDB (ART) são criados nas colunas de fi
 
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -230,7 +231,7 @@ def ingest_key(project_id: str, relative_path: str, sheet_name: str) -> str:
 
 
 def table_name_for(project_id: str, relative_path: str, sheet_name: str) -> str:
-    """Nome estável: ``p_{projeto}__{caminho}__{aba}``."""
+    """Nome estável: ``p_{projeto}__{caminho}__{aba}`` (com sufixo hash se truncar)."""
     rel = Path(relative_path)
     stem = _sanitize_identifier(rel.stem)
     parent = _sanitize_identifier(rel.parent.as_posix().replace("/", "_") if rel.parent.parts else "")
@@ -240,7 +241,14 @@ def table_name_for(project_id: str, relative_path: str, sheet_name: str) -> str:
     if parent and parent != "x":
         parts.append(parent)
     parts.extend([stem, sheet])
-    return "__".join(parts)[:120]
+    base = "__".join(parts)
+    if len(base) <= 120:
+        return base
+    digest = hashlib.sha256(
+        ingest_key(project_id, relative_path, sheet_name).encode("utf-8")
+    ).hexdigest()[:8]
+    max_base = 120 - 1 - len(digest)
+    return f"{base[:max_base]}_{digest}"
 
 
 def _file_content_hash(scanned: ScannedFile) -> str:
