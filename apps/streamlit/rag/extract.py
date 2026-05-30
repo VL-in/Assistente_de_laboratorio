@@ -341,7 +341,7 @@ def _serialize_table_as_records(
     Por que esse formato?
     ---------------------
     O extrator antigo emitia uma linha TSV por reagente, com o header da
-    tabela só na 1ª linha. O ``chunk_text`` (limite padrão ~720 chars) cortava
+    tabela só na 1ª linha. O ``chunk_text`` (limite padrão ~520 chars) cortava
     tabelas longas no meio, e os chunks subsequentes ficavam sem o header
     — o LLM precisava adivinhar qual coluna era qual. Isso causava respostas
     erradas em perguntas do tipo "qual a validade do X?".

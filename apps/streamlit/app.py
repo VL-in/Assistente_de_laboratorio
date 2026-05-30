@@ -99,8 +99,11 @@ from ml.chat_infer import load_chat_model_bundle, ml_inference_status_message
 from ml.kaggle_sources import kaggle_cache_root
 from ml.training import flaml_available
 from rag import (
+    DEFAULT_CHUNK_MAX_CHARS,
+    DEFAULT_CHUNK_OVERLAP,
     EMBEDDING_MODEL_ID,
     RERANKER_MODEL_ID,
+    RerankerLoadResult,
     build_index,
     default_retrieve_k,
     env_hybrid_enabled,
@@ -108,7 +111,7 @@ from rag import (
     hybrid_dense_weight,
     index_mtime,
     index_ready,
-    load_reranker,
+    load_reranker_safe,
     manifest_exists,
     manifest_path,
     rerank_hits,
@@ -221,19 +224,34 @@ def _ml_bundle_cached(model_path: str, mtime_key: float):
 
 
 @st.cache_resource(show_spinner="Carregando reranker RAG (cross-encoder)…")
-def _rag_reranker_cached():
+def _rag_reranker_bundle_cached() -> RerankerLoadResult:
     """
     Carrega o cross-encoder para rerank em cache de processo.
 
-    Retorna ``None`` quando ``RAG_RERANK_ENABLED=0`` ou se o modelo não puder
-    ser carregado — nesse caso o RAG continua só com busca vetorial.
+    Retorna ``RerankerLoadResult`` com ``model=None`` e ``error`` preenchido
+    quando o modelo não puder ser carregado — a busca híbrida continua, mas
+    sem rerank (evita falha silenciosa).
     """
-    if not env_rerank_enabled():
-        return None
-    try:
-        return load_reranker()
-    except Exception:
-        return None
+    return load_reranker_safe()
+
+
+def _format_rag_hit_title(hit: dict, rank: int) -> str:
+    """Cabeçalho do expander na aba de teste RAG (rerank vs retrieval)."""
+    score = hit.get("score")
+    retrieval = hit.get("retrieval_score")
+    parts = [f"#{rank}"]
+    if hit.get("rerank_applied"):
+        parts.append(f"rerank={score}")
+        if retrieval is not None:
+            parts.append(f"retrieval={retrieval}")
+    else:
+        parts.append(f"score={score}")
+        if env_rerank_enabled():
+            parts.append("sem rerank")
+    mode = hit.get("search_mode")
+    if mode:
+        parts.append(str(mode))
+    return " · ".join(parts)
 
 
 def rag_semantic_search(
@@ -247,7 +265,7 @@ def rag_semantic_search(
     """
     Executa busca híbrida (BM25 + semântica) com rerank opcional usando backends em cache.
 
-    ``_txtai_backend_cached`` gerencia o índice txtai; ``_rag_reranker_cached``
+    ``_txtai_backend_cached`` gerencia o índice txtai; ``_rag_reranker_bundle_cached``
     gerencia o cross-encoder quando o rerank está ativo.
     """
     if not index_ready():
@@ -263,8 +281,11 @@ def rag_semantic_search(
 
     tk = max(int(limit), 1)
     reranker_loaded = reranker
+    rerank_error: str | None = None
     if reranker_loaded is None and env_rerank_enabled():
-        reranker_loaded = _rag_reranker_cached()
+        bundle = _rag_reranker_bundle_cached()
+        reranker_loaded = bundle.model
+        rerank_error = bundle.error
     use_rerank = reranker_loaded is not None
 
     retrieve_k = default_retrieve_k(tk, rerank_retrieve_k) if use_rerank else tk
@@ -277,6 +298,10 @@ def rag_semantic_search(
     )
     if use_rerank and hits:
         hits = rerank_hits(q, hits, reranker=reranker_loaded, top_k=tk)
+    elif rerank_error and env_rerank_enabled():
+        for hit in hits:
+            hit["rerank_applied"] = False
+            hit["rerank_error"] = rerank_error
     return hits
 
 
@@ -409,7 +434,7 @@ def _run_chat_via_crew(
     if documents_available:
         rag_backend = _txtai_backend_cached(index_mtime())
         if env_rerank_enabled():
-            rag_reranker = _rag_reranker_cached()
+            rag_reranker = _rag_reranker_bundle_cached().model
 
     ml_bundle = None
     ml_path: Path | None = None
@@ -824,8 +849,8 @@ def _tab_documentos(root: Path, root_ok: bool, root_msg: str) -> None:
             stats = build_index(
                 scans,
                 project_ids=None,
-                max_chars=720,
-                overlap=150,
+                max_chars=DEFAULT_CHUNK_MAX_CHARS,
+                overlap=DEFAULT_CHUNK_OVERLAP,
                 max_doc_chars=2_000_000,
                 batch_size=64,
                 replace_existing=not index_ready(),
@@ -991,9 +1016,9 @@ def _tab_indexacao_rag(scans: list[ProjectScan] | None) -> None:
             "Tamanho máx. do chunk (caracteres)",
             min_value=200,
             max_value=4000,
-            value=720,
+            value=DEFAULT_CHUNK_MAX_CHARS,
             step=20,
-            help="E5-small suporta até ~512 tokens; 720 caracteres (~150–180 tokens) é o padrão.",
+            help="E5-small suporta até ~512 tokens; 520 caracteres (~100–130 tokens) é o padrão.",
             key="dev_rag_chunk_chars",
         )
     with c2:
@@ -1001,7 +1026,7 @@ def _tab_indexacao_rag(scans: list[ProjectScan] | None) -> None:
             "Sobreposição entre chunks",
             min_value=0,
             max_value=800,
-            value=150,
+            value=DEFAULT_CHUNK_OVERLAP,
             step=10,
             key="dev_rag_chunk_overlap",
         )
@@ -1129,11 +1154,21 @@ def _tab_rag_dev() -> None:
     )
 
     hybrid_on = env_hybrid_enabled()
+    rerank_bundle = _rag_reranker_bundle_cached() if env_rerank_enabled() else None
+    rerank_line = f"- Reranker: `{RERANKER_MODEL_ID}`"
+    if rerank_bundle is not None:
+        if rerank_bundle.ok:
+            rerank_line += " — **ativo** (cross-encoder carregado)"
+        else:
+            rerank_line += f" — **indisponível** ({rerank_bundle.error})"
+    else:
+        rerank_line += " — desligado (`RAG_RERANK_ENABLED=0`)"
     st.markdown(
         f"- Modelo de embedding: `{EMBEDDING_MODEL_ID}`\n"
         f"- Busca híbrida (BM25 + semântica): **{'sim' if hybrid_on else 'não'}**"
         + (f" — peso denso α=`{hybrid_dense_weight()}`" if hybrid_on else "")
-        + f"\n- Reranker (automático): `{RERANKER_MODEL_ID}`\n"
+        + f"\n{rerank_line}\n"
+        f"- Chunk padrão: **{DEFAULT_CHUNK_MAX_CHARS}** chars · overlap **{DEFAULT_CHUNK_OVERLAP}**\n"
         f"- Índice: `{txtai_index_path()}` — **pronto:** {'sim' if index_ready() else 'não'}"
     )
 
@@ -1162,18 +1197,15 @@ def _tab_rag_dev() -> None:
                 st.info("Nenhum resultado para esta consulta.")
             else:
                 st.metric("Resultados", len(hits))
+                if hits and hits[0].get("rerank_applied"):
+                    st.caption("Scores **rerank** = cross-encoder; **retrieval** = busca híbrida (E5+BM25).")
+                elif env_rerank_enabled() and hits:
+                    err = hits[0].get("rerank_error")
+                    if err:
+                        st.warning(f"Rerank não aplicado: {err}")
                 for i, h in enumerate(hits, start=1):
-                    score = h.get("score")
-                    retrieval = h.get("retrieval_score")
-                    # "cited" contém o texto completo com prefixo de projeto/arquivo.
-                    # Cai em "text" para compatibilidade com índices antigos.
                     body = (h.get("cited") or h.get("text") or "").strip()
-                    title = f"#{i} · score={score}"
-                    mode = h.get("search_mode")
-                    if mode:
-                        title += f" · {mode}"
-                    if retrieval is not None and retrieval != score:
-                        title += f" · retrieval={retrieval}"
+                    title = _format_rag_hit_title(h, i)
                     with st.expander(title, expanded=(i <= 3)):
                         st.markdown(body if body else "_(sem texto)_")
                         with st.popover("JSON bruto"):

@@ -158,6 +158,7 @@ def rag_search_tool(
                 h.get("search_mode") == "hybrid" for h in hits
             ),
             "hybrid_dense_weight": hybrid_dense_weight() if env_hybrid_enabled() else None,
+            "rerank_applied": any(h.get("rerank_applied") for h in hits),
         },
         summary=f"{len(hits)} evidência(s)"
         + (" · rerank" if use_rerank else "")

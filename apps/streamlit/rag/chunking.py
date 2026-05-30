@@ -3,8 +3,8 @@ Divisão de texto em chunks com sobreposição para indexação semântica.
 
 O modelo de embedding RAG (``intfloat/multilingual-e5-small``) processa até
 **512 tokens** por entrada. Em português, 1 token ≈ 4–5 caracteres; o padrão
-na UI é **720 caracteres** (~150–180 tokens) com sobreposição de 150 — bem
-dentro da janela do modelo e alinhado ao tamanho de chunk já usado no projeto.
+na UI é **520 caracteres** (~100–130 tokens) com sobreposição de 120 — bem
+dentro da janela do modelo.
 
 A sobreposição (``overlap``) cria uma janela deslizante entre chunks consecutivos:
 o final do chunk N reaparece no início do chunk N+1. Isso preserva o contexto
@@ -13,6 +13,10 @@ em um único chunk que talvez não seja recuperado.
 """
 
 from __future__ import annotations
+
+
+DEFAULT_CHUNK_MAX_CHARS = 520
+DEFAULT_CHUNK_OVERLAP = 120
 
 
 def chunk_text(text: str, *, max_chars: int, overlap: int) -> list[str]:

@@ -12,9 +12,11 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from rag.rerank import (  # noqa: E402
+    RERANKER_MODEL_ID,
     default_retrieve_k,
     env_rerank_enabled,
     hit_text_for_rerank,
+    load_reranker_safe,
     rerank_hits,
 )
 
@@ -30,6 +32,16 @@ class MockReranker:
 
 
 class RerankHelpersTests(unittest.TestCase):
+    def test_reranker_model_id_is_valid_slug(self) -> None:
+        self.assertIn("L12-H384", RERANKER_MODEL_ID)
+        self.assertNotIn("L6-H384", RERANKER_MODEL_ID)
+
+    @patch("rag.rerank.load_reranker", side_effect=OSError("modelo ausente"))
+    def test_load_reranker_safe_returns_error(self, _mock: object) -> None:
+        result = load_reranker_safe()
+        self.assertFalse(result.ok)
+        self.assertIn("modelo ausente", result.error or "")
+
     def test_default_retrieve_k_heuristic(self) -> None:
         self.assertEqual(default_retrieve_k(6), 24)
         self.assertEqual(default_retrieve_k(6, override=30), 30)
@@ -68,6 +80,8 @@ class RerankHitsTests(unittest.TestCase):
         )
         self.assertEqual(out[0]["id"], "b")
         self.assertEqual(out[0]["retrieval_score"], 0.5)
+        self.assertTrue(out[0].get("rerank_applied"))
+        self.assertEqual(out[0].get("rerank_score"), out[0]["score"])
         self.assertGreater(out[0]["score"], out[1]["score"])
 
     def test_respects_top_k(self) -> None:

@@ -27,6 +27,7 @@ Constantes (``EMBEDDING_MODEL_ID``, ``ENV_TXTAI_DIR``)
     diagnóstico e na aba de indexação.
 """
 
+from .chunking import DEFAULT_CHUNK_MAX_CHARS, DEFAULT_CHUNK_OVERLAP
 from .index_txtai import (
     EMBEDDING_MODEL_ID,
     BuildStats,
@@ -48,18 +49,23 @@ from .hybrid import (
 )
 from .rerank import (
     RERANKER_MODEL_ID,
+    RerankerLoadResult,
     default_retrieve_k,
     env_rerank_enabled,
     load_reranker,
+    load_reranker_safe,
     rerank_hits,
 )
 
 __all__ = [
+    "DEFAULT_CHUNK_MAX_CHARS",
+    "DEFAULT_CHUNK_OVERLAP",
     "DEFAULT_HYBRID_WEIGHT",
     "EMBEDDING_MODEL_ID",
     "ENV_HYBRID_ENABLED",
     "ENV_HYBRID_WEIGHT",
     "RERANKER_MODEL_ID",
+    "RerankerLoadResult",
     "BuildStats",
     "ENV_TXTAI_DIR",
     "build_index",
@@ -71,6 +77,7 @@ __all__ = [
     "index_mtime",
     "index_ready",
     "load_reranker",
+    "load_reranker_safe",
     "manifest_exists",
     "manifest_path",
     "rerank_hits",

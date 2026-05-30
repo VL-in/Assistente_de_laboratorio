@@ -35,7 +35,7 @@ from typing import Callable
 
 from projects_loader import ProjectScan, ScannedFile, compute_file_sha256
 
-from .chunking import chunk_text
+from .chunking import DEFAULT_CHUNK_MAX_CHARS, DEFAULT_CHUNK_OVERLAP, chunk_text
 from .extract import extract_from_scanned_file
 from .hybrid import env_hybrid_enabled, hybrid_dense_weight
 from .manifest import (

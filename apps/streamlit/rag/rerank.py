@@ -9,13 +9,19 @@ maior de candidatos antes de montar o contexto para o LLM.
 
 from __future__ import annotations
 
+import logging
 import os
+from dataclasses import dataclass
 from typing import Any
 
-# Multilingual MS MARCO — adequado a documentos de laboratório em pt-BR.
+logger = logging.getLogger(__name__)
+
+# Multilingual MS MARCO (14 idiomas, incl. pt-BR) — rerank cross-encoder.
+# O slug L12 é o publicado em https://huggingface.co/cross-encoder/mmarco-mMiniLMv2-L12-H384-v1
+# (L6-H384 não existe no Hub e fazia o rerank falhar silenciosamente).
 RERANKER_MODEL_ID = os.environ.get(
     "RAG_RERANK_MODEL_ID",
-    "cross-encoder/mmarco-mMiniLMv2-L6-H384-v1",
+    "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1",
 ).strip()
 
 ENV_RERANK_ENABLED = "RAG_RERANK_ENABLED"
@@ -76,6 +82,30 @@ def load_reranker(model_id: str | None = None) -> Any:
     return CrossEncoder(mid)
 
 
+@dataclass(frozen=True)
+class RerankerLoadResult:
+    """Resultado do carregamento do cross-encoder (modelo + erro opcional)."""
+
+    model: object | None
+    error: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.model is not None and self.error is None
+
+
+def load_reranker_safe(model_id: str | None = None) -> RerankerLoadResult:
+    """Carrega o reranker sem propagar exceção — útil na UI e no cache Streamlit."""
+    if not env_rerank_enabled():
+        return RerankerLoadResult(None, "RAG_RERANK_ENABLED=0")
+    try:
+        return RerankerLoadResult(load_reranker(model_id), None)
+    except Exception as exc:  # noqa: BLE001
+        msg = f"{type(exc).__name__}: {exc}"
+        logger.warning("Falha ao carregar reranker %s: %s", RERANKER_MODEL_ID, msg)
+        return RerankerLoadResult(None, msg)
+
+
 def rerank_hits(
     query: str,
     hits: list[dict],
@@ -101,7 +131,9 @@ def rerank_hits(
         out = dict(hit)
         if "retrieval_score" not in out:
             out["retrieval_score"] = hit.get("score")
+        out["rerank_score"] = float(score)
         out["score"] = float(score)
+        out["rerank_applied"] = True
         reranked.append(out)
 
     reranked.sort(key=lambda h: h.get("score") or 0.0, reverse=True)

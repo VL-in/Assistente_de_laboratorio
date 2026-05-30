@@ -308,7 +308,7 @@ Pasta de projetos → inventário (scan) → extração de texto → chunking �
 |-------|------------|-----------------|
 | Inventário | Fontes e inventário | `projects_loader.py` — extensões filtráveis na barra lateral |
 | Extração | Indexação RAG | `rag/extract.py` — docx (**parágrafos + tabelas**), xlsx, pdf, txt, md, csv |
-| Chunking | Indexação RAG | `rag/chunking.py` — padrão 720 caracteres (~150–180 tokens), sobreposição 150, lote 64 |
+| Chunking | Indexação RAG | `rag/chunking.py` — padrão **520** caracteres (~100–130 tokens), sobreposição **120**, lote 64 |
 | Índice | Indexação RAG | `rag/index_txtai.py` + TEI — modelo [`intfloat/multilingual-e5-small`](https://huggingface.co/intfloat/multilingual-e5-small) (até 512 tokens) + **BM25** (busca híbrida) |
 | Busca | Teste RAG / Chat | Híbrida: semântica (E5) + lexical (BM25); trechos citam projeto e arquivo |
 
