@@ -14,11 +14,11 @@ Indexação (``build_index``)
     - **Primeira indexação** (sem índice em disco): equivalente à reconstrução
       total, mas sem necessidade de apagar nada.
 
-Busca semântica (``search_chunks``, ``search_with_backend``)
-    ``search_chunks`` abre e fecha o índice a cada chamada — adequado para
-    scripts e testes isolados. ``search_with_backend`` recebe uma instância
-    já carregada (cache do Streamlit), evitando recarregar o modelo a cada
-    pergunta do usuário.
+Busca híbrida (``search_chunks``, ``search_with_backend``)
+    Consulta o índice por similaridade semântica (E5) **e** correspondência
+    lexical BM25 quando ``RAG_HYBRID_ENABLED=1`` (padrão). ``search_with_backend``
+    recebe a instância já carregada (cache do Streamlit), evitando recarregar o
+    modelo a cada pergunta do usuário.
 
 Formatação de contexto (``format_context_for_llm``)
     Monta o bloco de contexto citável injetado no system prompt do chat.
@@ -37,6 +37,7 @@ from projects_loader import ProjectScan, ScannedFile, compute_file_sha256
 
 from .chunking import chunk_text
 from .extract import extract_from_scanned_file
+from .hybrid import env_hybrid_enabled, hybrid_dense_weight
 from .manifest import (
     EXTRACTION_LOGIC_VERSION,
     IndexManifest,
@@ -72,10 +73,14 @@ def embeddings_config() -> dict:
     ao vetor no índice. Sem isso, ``search()`` retornaria apenas ``(id, score)``
     e não seria possível montar o contexto com trechos citáveis para o LLM.
 
+    ``hybrid=True`` (padrão) cria um índice BM25 paralel ao vetorial. Na busca,
+    o txtai funde os scores dos dois índices — útil para termos técnicos exatos
+    (ex.: ``tampão de amostra``) que a busca só semântica costuma diluir.
+
     O vetor é calculado pelo serviço TEI (``EMBEDDING_SERVICE_URL``), não
     carregado dentro do processo Streamlit.
     """
-    return {
+    cfg: dict = {
         "path": "external",
         "method": "external",
         "transform": EMBEDDING_TRANSFORM_PATH,
@@ -85,6 +90,9 @@ def embeddings_config() -> dict:
             "data": "passage: ",
         },
     }
+    if env_hybrid_enabled():
+        cfg["hybrid"] = True
+    return cfg
 
 
 # ── Tipos e estatísticas ─────────────────────────────────────────────────────
@@ -457,6 +465,7 @@ def build_index(
             embedding_model=EMBEDDING_MODEL_ID,
             extraction_logic_version=EXTRACTION_LOGIC_VERSION,
             chunking_signature=chunk_sig,
+            hybrid_index=env_hybrid_enabled(),
         )
         files_by_key = {file_index_key(sf): sf for sf in files}
         chunk_ids_by_key: dict[str, list[str]] = {}
@@ -525,6 +534,20 @@ def _build_index_incremental(
         )
         return stats
 
+    want_hybrid = env_hybrid_enabled()
+    if had_manifest and want_hybrid and not manifest.hybrid_index:
+        stats.errors.append(
+            "Índice atual foi criado só com busca semântica (sem BM25). "
+            "Use **Substituir índice** uma vez para habilitar busca híbrida."
+        )
+        return stats
+    if had_manifest and not want_hybrid and manifest.hybrid_index:
+        stats.errors.append(
+            "Índice híbrido (BM25) no disco, mas RAG_HYBRID_ENABLED=0. "
+            "Use **Substituir índice** ou reative a busca híbrida."
+        )
+        return stats
+
     if not had_manifest:
         stats.errors.append(
             "Manifesto ausente: todos os arquivos serão processados nesta execução. "
@@ -551,6 +574,7 @@ def _build_index_incremental(
         )
     manifest.extraction_logic_version = EXTRACTION_LOGIC_VERSION
     manifest.chunking_signature = chunk_sig
+    manifest.hybrid_index = want_hybrid
 
     current_keys: set[str] = set()
     rows_to_upsert: list[Row] = []
@@ -714,7 +738,47 @@ def index_mtime() -> float:
         return 0.0
 
 
-# ── Busca semântica ──────────────────────────────────────────────────────────
+# ── Busca híbrida / semântica ────────────────────────────────────────────────
+
+def _search_parameters(
+    query: str,
+    *,
+    hybrid_weight: float | None = None,
+) -> dict[str, object]:
+    """Parâmetros nomeados para a query SQL do txtai."""
+    params: dict[str, object] = {"query": query}
+    if env_hybrid_enabled():
+        params["weight"] = hybrid_dense_weight(hybrid_weight)
+    return params
+
+
+def _backend_supports_hybrid(backend: object) -> bool:
+    """True quando o índice carregado possui componente BM25."""
+    if not env_hybrid_enabled():
+        return False
+    issparse = getattr(backend, "issparse", None)
+    if callable(issparse):
+        return bool(issparse())
+    return getattr(backend, "scoring", None) is not None
+
+
+def _annotate_hits(
+    hits: list[dict],
+    *,
+    backend: object,
+    hybrid_weight: float | None,
+) -> list[dict]:
+    """Marca cada hit com metadados de modo de busca (observabilidade / UI dev)."""
+    if not hits:
+        return hits
+    hybrid_active = _backend_supports_hybrid(backend)
+    weight = hybrid_dense_weight(hybrid_weight) if hybrid_active else None
+    for hit in hits:
+        hit["search_mode"] = "hybrid" if hybrid_active else "semantic"
+        if weight is not None:
+            hit["hybrid_dense_weight"] = weight
+    return hits
+
 
 def format_search_results(raw: object) -> list[dict]:
     """
@@ -735,9 +799,9 @@ def format_search_results(raw: object) -> list[dict]:
     return normalized
 
 
-def search_chunks(query: str, limit: int) -> list[dict]:
+def search_chunks(query: str, limit: int, *, hybrid_weight: float | None = None) -> list[dict]:
     """
-    Executa uma busca semântica abrindo e fechando o índice a cada chamada.
+    Executa busca híbrida (ou só semântica) abrindo e índice a cada chamada.
 
     Adequado para scripts e testes isolados onde não há cache de instância.
     Para uso no Streamlit, prefira ``search_with_backend`` com a instância
@@ -754,9 +818,12 @@ def search_chunks(query: str, limit: int) -> list[dict]:
 
     path = txtai_index_path()
     emb = Embeddings(embeddings_config())
+    weight = hybrid_dense_weight(hybrid_weight) if env_hybrid_enabled() else None
     try:
         emb.load(str(path))
-        return format_search_results(emb.search(q, limit))
+        raw = emb.search(q, limit, weights=weight) if weight is not None else emb.search(q, limit)
+        hits = format_search_results(raw)
+        return _annotate_hits(hits, backend=emb, hybrid_weight=hybrid_weight)
     finally:
         emb.close()
 
@@ -804,14 +871,26 @@ def search_with_backend(
     *,
     project_ids: set[str] | None = None,
     retrieve_limit: int | None = None,
+    hybrid_weight: float | None = None,
 ) -> list[dict]:
     """
-    Executa uma busca semântica usando uma instância de ``Embeddings`` já carregada.
+    Executa busca híbrida (BM25 + semântica) ou só semântica no índice txtai.
 
     Receber o backend como parâmetro (em vez de criá-lo internamente) evita
     recarregar o índice txtai a cada pergunta do usuário. A instância deve
     ser gerenciada pelo chamador (ex.: ``st.cache_resource`` no Streamlit).
     A vetorização em si ocorre no serviço TEI externo.
+
+    Busca híbrida
+    -------------
+    Com ``hybrid=True`` na indexação, o txtai mantém um índice BM25 sobre o
+    texto bruto de cada chunk **e** o índice vetorial E5. Na consulta, funde
+    os dois rankings — termos exatos (ex.: ``tampão de amostra``) sobem no
+    top-K mesmo quando a busca só semântica privilegia palavras isoladas.
+
+    O peso denso α (``RAG_HYBRID_WEIGHT``, padrão 0.4) equilibra significado
+    vs. correspondência literal. Documentos **novos** indexados incrementalmente
+    entram nos dois índices automaticamente; não há lista fixa de termos.
 
     Quando ``project_ids`` é informado, busca ``limit * 5`` candidatos e filtra
     por projeto antes de truncar — compensa hits de outros projetos no top-K bruto.
@@ -827,32 +906,43 @@ def search_with_backend(
     os campos customizados (``project_id``, ``relative_path``, ``chunk_index``,
     ``cited``) que são essenciais para o LLM citar projeto/arquivo na resposta.
 
+    Com híbrida ativa, passamos ``similar(:query, :weight)`` para controlar α.
+
     Caso a query SQL falhe (índice antigo sem alguma coluna, versão do txtai
-    incompatível, etc.), caímos no ``backend.search(q, k)`` simples — o
-    ``format_context_for_llm`` é defensivo o suficiente para extrair Projeto e
-    Arquivo via regex do prefixo ``[Projeto: …] [Arquivo: …]`` embutido no
-    ``text``/``cited``.
+    incompatível, etc.), caímos no ``backend.search(q, k, weights=…)`` simples.
     """
     q = (query or "").strip()
     if not q:
         return []
     output_limit = int(retrieve_limit) if retrieve_limit is not None else int(limit)
     fetch_limit = output_limit * 5 if project_ids else output_limit
+    params = _search_parameters(q, hybrid_weight=hybrid_weight)
+    weight = params.get("weight")
 
-    sql = (
-        f"select {', '.join(_RAG_SQL_COLUMNS)} "
-        f"from txtai where similar(:query) limit {int(fetch_limit)}"
-    )
+    if weight is not None:
+        sql = (
+            f"select {', '.join(_RAG_SQL_COLUMNS)} "
+            f"from txtai where similar(:query, :weight) limit {int(fetch_limit)}"
+        )
+    else:
+        sql = (
+            f"select {', '.join(_RAG_SQL_COLUMNS)} "
+            f"from txtai where similar(:query) limit {int(fetch_limit)}"
+        )
     try:
-        raw = backend.search(sql, parameters={"query": q})  # type: ignore[attr-defined]
+        raw = backend.search(sql, parameters=params)  # type: ignore[attr-defined]
         hits = format_search_results(raw)
     except Exception:
-        # Fallback: índice antigo sem alguma coluna, txtai sem suporte a
-        # parameters, etc. A versão simples preserva o comportamento legado.
-        hits = format_search_results(backend.search(q, fetch_limit))  # type: ignore[attr-defined]
+        if weight is not None:
+            hits = format_search_results(
+                backend.search(q, fetch_limit, weights=weight)  # type: ignore[attr-defined]
+            )
+        else:
+            hits = format_search_results(backend.search(q, fetch_limit))  # type: ignore[attr-defined]
 
     hits = filter_hits_by_project(hits, project_ids)
-    return hits[:output_limit]
+    hits = hits[:output_limit]
+    return _annotate_hits(hits, backend=backend, hybrid_weight=hybrid_weight)
 
 
 # ── Formatação de contexto para o LLM ───────────────────────────────────────

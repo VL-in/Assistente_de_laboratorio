@@ -103,7 +103,9 @@ from rag import (
     RERANKER_MODEL_ID,
     build_index,
     default_retrieve_k,
+    env_hybrid_enabled,
     env_rerank_enabled,
+    hybrid_dense_weight,
     index_mtime,
     index_ready,
     load_reranker,
@@ -243,9 +245,9 @@ def rag_semantic_search(
     rerank_retrieve_k: int | None = None,
 ) -> list[dict]:
     """
-    Executa busca semântica (e rerank opcional) usando backends em cache.
+    Executa busca híbrida (BM25 + semântica) com rerank opcional usando backends em cache.
 
-    ``_txtai_backend_cached`` gerencia o índice vetorial; ``_rag_reranker_cached``
+    ``_txtai_backend_cached`` gerencia o índice txtai; ``_rag_reranker_cached``
     gerencia o cross-encoder quando o rerank está ativo.
     """
     if not index_ready():
@@ -1119,16 +1121,19 @@ def _tab_indexacao_rag(scans: list[ProjectScan] | None) -> None:
 
 
 def _tab_rag_dev() -> None:
-    """Aba 3 — Busca semântica direta no índice txtai, sem passar pelo LLM."""
+    """Aba 3 — Busca híbrida direta no índice txtai, sem passar pelo LLM."""
     st.header("Teste RAG (desenvolvedor)")
     st.caption(
         "Consulta direta ao índice **txtai** (mesmo backend do chat com RAG). "
         "Use para validar chunking, metadados e relevância antes de acoplar ao LLM remoto."
     )
 
+    hybrid_on = env_hybrid_enabled()
     st.markdown(
         f"- Modelo de embedding: `{EMBEDDING_MODEL_ID}`\n"
-        f"- Reranker (automático): `{RERANKER_MODEL_ID}`\n"
+        f"- Busca híbrida (BM25 + semântica): **{'sim' if hybrid_on else 'não'}**"
+        + (f" — peso denso α=`{hybrid_dense_weight()}`" if hybrid_on else "")
+        + f"\n- Reranker (automático): `{RERANKER_MODEL_ID}`\n"
         f"- Índice: `{txtai_index_path()}` — **pronto:** {'sim' if index_ready() else 'não'}"
     )
 
@@ -1137,13 +1142,14 @@ def _tab_rag_dev() -> None:
         return
 
     q = st.text_input(
-        "Consulta semântica",
-        placeholder="Ex.: validade do reagente X no projeto ELISA",
+        "Consulta",
+        placeholder="Ex.: tampão de amostra no protocolo ELISA",
         key="dev_rag_search_query",
     )
     top_k = st.slider("Top-K", min_value=1, max_value=25, value=8, key="dev_rag_search_top_k")
     st.caption(
-        "O rerank com cross-encoder é aplicado automaticamente após a busca vetorial."
+        "Busca híbrida combina significado (E5) com termos exatos (BM25). "
+        "O rerank com cross-encoder é aplicado automaticamente após a recuperação."
     )
 
     if st.button("Executar busca", type="primary", key="btn_rag_dev_search"):
@@ -1163,6 +1169,9 @@ def _tab_rag_dev() -> None:
                     # Cai em "text" para compatibilidade com índices antigos.
                     body = (h.get("cited") or h.get("text") or "").strip()
                     title = f"#{i} · score={score}"
+                    mode = h.get("search_mode")
+                    if mode:
+                        title += f" · {mode}"
                     if retrieval is not None and retrieval != score:
                         title += f" · retrieval={retrieval}"
                     with st.expander(title, expanded=(i <= 3)):
@@ -1452,7 +1461,7 @@ def _tab_desenvolvimento(
         [
             "Visão geral",
             "Parâmetros do chat",
-            "Busca semântica",
+            "Busca híbrida",
             "Índice vetorial",
             "Planilhas",
             "Diagnóstico",

@@ -31,7 +31,9 @@ from ml.training import ModelBundle
 from olap import OlapQueryResult, has_ingested_tables, run_nl_olap_query
 from rag import (
     default_retrieve_k,
+    env_hybrid_enabled,
     format_context_for_llm,
+    hybrid_dense_weight,
     index_ready,
     rerank_hits,
     search_with_backend,
@@ -73,12 +75,13 @@ def rag_search_tool(
     rerank_retrieve_k: int | None = None,
 ) -> ToolResult:
     """
-    Busca semântica no índice txtai e formata contexto citável.
+    Busca híbrida (BM25 + semântica) no índice txtai e formata contexto citável.
 
     Parameters
     ----------
     query:
-        Texto da pergunta do usuário (será embeddado).
+        Texto da pergunta do usuário (será embeddado para a parte semântica;
+        BM25 usa os tokens literais da consulta).
     backend:
         Instância ``Embeddings`` já carregada — vinda do cache do Streamlit
         (``_txtai_backend_cached``). Quando ``None``, retorna ``ok=False``.
@@ -151,8 +154,14 @@ def rag_search_tool(
             "top_k": tk,
             "rerank_enabled": use_rerank,
             "retrieve_k": retrieve_k if use_rerank else tk,
+            "hybrid_enabled": env_hybrid_enabled() and any(
+                h.get("search_mode") == "hybrid" for h in hits
+            ),
+            "hybrid_dense_weight": hybrid_dense_weight() if env_hybrid_enabled() else None,
         },
-        summary=f"{len(hits)} evidência(s)" + (" · rerank" if use_rerank else ""),
+        summary=f"{len(hits)} evidência(s)"
+        + (" · rerank" if use_rerank else "")
+        + (" · híbrida" if env_hybrid_enabled() else ""),
     )
 
 

@@ -105,6 +105,9 @@ class IndexManifest:
         Versão da lógica de extração de texto. Ver ``EXTRACTION_LOGIC_VERSION``.
     chunking_signature:
         Parâmetros de chunking serializados. Ver ``chunking_signature()``.
+    hybrid_index:
+        ``True`` quando o índice txtai inclui BM25 (busca híbrida). Índices
+        antigos só semânticos ficam com ``False`` até reconstrução.
 
     Campo de dados
     --------------
@@ -116,6 +119,7 @@ class IndexManifest:
     embedding_model: str = ""
     extraction_logic_version: int = EXTRACTION_LOGIC_VERSION
     chunking_signature: str = ""
+    hybrid_index: bool = False
     files: dict[str, FileManifestEntry] = field(default_factory=dict)
 
     def get(self, key: str) -> FileManifestEntry | None:
@@ -189,6 +193,7 @@ def load_manifest() -> IndexManifest:
         embedding_model=str(raw.get("embedding_model") or ""),
         extraction_logic_version=int(raw.get("extraction_logic_version") or 0),
         chunking_signature=str(raw.get("chunking_signature") or ""),
+        hybrid_index=bool(raw.get("hybrid_index")),
         files=files,
     )
 
@@ -209,6 +214,7 @@ def save_manifest(manifest: IndexManifest) -> None:
         "embedding_model": manifest.embedding_model,
         "extraction_logic_version": manifest.extraction_logic_version,
         "chunking_signature": manifest.chunking_signature,
+        "hybrid_index": manifest.hybrid_index,
         "files": {
             key: {
                 "content_hash_sha256": entry.content_hash_sha256,

@@ -87,6 +87,7 @@ class EmbeddingClientTests(unittest.TestCase):
             mock_embed.assert_called_once_with(["x"])
             np.testing.assert_array_equal(out, np.array([[1.0]], dtype=np.float32))
 
+    @patch.dict("os.environ", {"RAG_HYBRID_ENABLED": "1"}, clear=False)
     def test_embeddings_config_external_with_e5_prefixes(self) -> None:
         cfg = embeddings_config()
         self.assertEqual(cfg["path"], "external")
@@ -95,6 +96,7 @@ class EmbeddingClientTests(unittest.TestCase):
         self.assertEqual(cfg["instructions"]["query"], "query: ")
         self.assertEqual(cfg["instructions"]["data"], "passage: ")
         self.assertEqual(cfg["transform"], EMBEDDING_TRANSFORM_PATH)
+        self.assertTrue(cfg.get("hybrid"))
 
 
 if __name__ == "__main__":

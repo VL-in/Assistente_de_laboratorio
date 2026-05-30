@@ -8,11 +8,10 @@ Indexação (``build_index``, ``BuildStats``)
     inventário produzido por ``projects_loader``. Consumido pela aba
     "Indexação RAG" do ``app.py``.
 
-Busca semântica (``search_chunks``, ``search_with_backend``)
-    Consulta o índice por similaridade semântica. ``search_with_backend``
-    recebe a instância já carregada do cache do Streamlit para evitar
-    recarregar o modelo a cada interação. Consumido pelo chat e pela aba
-    "Teste RAG (dev)" do ``app.py``.
+Busca híbrida (``search_chunks``, ``search_with_backend``)
+    Consulta o índice por similaridade semântica (E5) e correspondência lexical
+    BM25 quando a busca híbrida está ativa. ``search_with_backend`` recebe a
+    instância já carregada do cache do Streamlit.
 
 Formatação de contexto (``format_context_for_llm``)
     Converte os hits de busca em um bloco de texto citável injetado no
@@ -40,6 +39,13 @@ from .index_txtai import (
 )
 from .manifest import manifest_exists, manifest_path
 from .paths import ENV_TXTAI_DIR, txtai_data_root, txtai_index_path
+from .hybrid import (
+    DEFAULT_HYBRID_WEIGHT,
+    ENV_HYBRID_ENABLED,
+    ENV_HYBRID_WEIGHT,
+    env_hybrid_enabled,
+    hybrid_dense_weight,
+)
 from .rerank import (
     RERANKER_MODEL_ID,
     default_retrieve_k,
@@ -49,14 +55,19 @@ from .rerank import (
 )
 
 __all__ = [
+    "DEFAULT_HYBRID_WEIGHT",
     "EMBEDDING_MODEL_ID",
+    "ENV_HYBRID_ENABLED",
+    "ENV_HYBRID_WEIGHT",
     "RERANKER_MODEL_ID",
     "BuildStats",
     "ENV_TXTAI_DIR",
     "build_index",
     "default_retrieve_k",
+    "env_hybrid_enabled",
     "env_rerank_enabled",
     "format_context_for_llm",
+    "hybrid_dense_weight",
     "index_mtime",
     "index_ready",
     "load_reranker",
