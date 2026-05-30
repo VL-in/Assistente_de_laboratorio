@@ -12,6 +12,7 @@ from observability.langfuse_client import (
     langfuse_enabled,
     langfuse_status,
     normalize_langfuse_env,
+    update_chat_trace_route,
 )
 
 
@@ -88,6 +89,31 @@ class TestLangfuseClient(unittest.TestCase):
             self.assertEqual(
                 os.environ.get("LANGFUSE_BASE_URL"), "https://us.cloud.langfuse.com"
             )
+
+    @patch("opentelemetry.trace.get_current_span")
+    @patch("langfuse.get_client")
+    @patch("observability.langfuse_client.langfuse_enabled", return_value=True)
+    def test_update_chat_trace_route_v4(
+        self,
+        _enabled: object,
+        mock_get_client: object,
+        mock_get_current_span: object,
+    ) -> None:
+        mock_client = mock_get_client.return_value
+        mock_span = mock_get_current_span.return_value
+        mock_span.is_recording.return_value = True
+
+        update_chat_trace_route(
+            tool_results={"rag": object()},
+        )
+
+        mock_client.update_current_span.assert_called_once()
+        metadata = mock_client.update_current_span.call_args.kwargs["metadata"]
+        self.assertIn("route:rag", metadata["route_tags"])
+        mock_span.set_attribute.assert_called_once_with(
+            "langfuse.trace.tags",
+            metadata["route_tags"],
+        )
 
 
 if __name__ == "__main__":

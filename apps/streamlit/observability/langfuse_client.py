@@ -140,10 +140,16 @@ def update_chat_trace_route(
     greeting: bool = False,
     tool_results: dict[str, Any] | None = None,
 ) -> None:
-    """Atualiza tags do trace Langfuse com a rota real executada no turno."""
+    """
+    Atualiza tags do turno com a rota real executada no crew.
+
+    Langfuse SDK v4 removeu ``update_current_trace()``; tags passam a ser
+    atributos da observação corrente (``langfuse.trace.tags`` no span OTEL).
+    """
     if not langfuse_enabled():
         return
     from langfuse import get_client
+    from opentelemetry import trace as otel_trace
 
     tags = crew_route_tags_from_execution(
         greeting=greeting,
@@ -151,7 +157,13 @@ def update_chat_trace_route(
     )
     env_tags = _langfuse_tags()
     all_tags = list(dict.fromkeys([*tags, *env_tags]))
-    get_client().update_current_trace(tags=all_tags)
+
+    client = get_client()
+    client.update_current_span(metadata={"route_tags": all_tags})
+
+    otel_span = otel_trace.get_current_span()
+    if otel_span is not None and otel_span.is_recording():
+        otel_span.set_attribute("langfuse.trace.tags", all_tags)
 
 
 def langfuse_status() -> dict[str, Any]:

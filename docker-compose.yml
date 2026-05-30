@@ -1,13 +1,33 @@
-# MVP: aplicação Streamlit roda só dentro deste contêiner.
-# Dados locais (Projetos) entram por volume; o LLM agora é remoto (OpenRouter).
+# MVP: aplicação Streamlit + serviço de embeddings (TEI) em contêineres separados.
+# Dados locais (Projetos) entram por volume; o LLM é remoto (OpenRouter).
 
 services:
+  embeddings:
+    build:
+      context: .
+      dockerfile: docker/embeddings/Dockerfile
+    container_name: assistente-lab-embeddings
+    restart: unless-stopped
+    environment:
+      HF_HOME: /data
+    volumes:
+      - assistente_embeddings:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:80/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 120s
+      retries: 5
+
   streamlit:
     build:
       context: .
       dockerfile: docker/streamlit/Dockerfile
     container_name: assistente-lab-streamlit
     restart: unless-stopped
+    depends_on:
+      embeddings:
+        condition: service_healthy
     ports:
       - "${STREAMLIT_PORT:-8502}:8502"
     environment:
@@ -21,6 +41,10 @@ services:
       TRANSFORMERS_CACHE: /data/ml/huggingface
       KAGGLEHUB_CACHE: /data/ml/kagglehub
       KAGGLE_API_TOKEN: ${KAGGLE_API_TOKEN:-}
+      # ── Embeddings RAG (TEI no contêiner ``embeddings``) ──
+      EMBEDDING_SERVICE_URL: ${EMBEDDING_SERVICE_URL:-http://embeddings:80}
+      EMBEDDING_TIMEOUT_S: ${EMBEDDING_TIMEOUT_S:-120}
+      EMBEDDING_HTTP_BATCH_SIZE: ${EMBEDDING_HTTP_BATCH_SIZE:-16}
       # ── LLM remoto (OpenRouter, API compatível com OpenAI) ──
       LLM_BASE_URL: ${LLM_BASE_URL:-https://openrouter.ai/api/v1}
       LLM_MODEL: ${LLM_MODEL:-openrouter/auto}
@@ -50,6 +74,7 @@ services:
       - assistente_sqlite:/data/sqlite
 
 volumes:
+  assistente_embeddings:
   assistente_txtai:
   assistente_duckdb:
   assistente_ml:

@@ -52,9 +52,13 @@ from .paths import ensure_txtai_parent_exists, txtai_index_path
 
 # ── Configuração do modelo ───────────────────────────────────────────────────
 
-# Modelo multilingual do MVP (~768 dimensões, max 128 tokens por entrada).
-# Troca de modelo invalida o índice existente — use "Substituir índice" na UI.
-EMBEDDING_MODEL_ID = "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"
+from .embedding_client import EMBEDDING_MODEL_ID, EMBEDDING_TRANSFORM_PATH
+
+# Modelo multilingual E5 (~384 dimensões, até 512 tokens por entrada).
+# Servido pelo contêiner TEI (``docker/embeddings``). Troca de modelo invalida
+# o índice existente — use "Substituir índice" na UI.
+#
+# Prefixos E5: ``passage:`` na indexação, ``query:`` na busca (via ``instructions``).
 
 # Alias de tipo: tupla (id_do_chunk, dicionário_de_metadados)
 Row = tuple[str, dict]
@@ -67,10 +71,19 @@ def embeddings_config() -> dict:
     ``content=True`` instrui o txtai a armazenar o texto e os metadados junto
     ao vetor no índice. Sem isso, ``search()`` retornaria apenas ``(id, score)``
     e não seria possível montar o contexto com trechos citáveis para o LLM.
+
+    O vetor é calculado pelo serviço TEI (``EMBEDDING_SERVICE_URL``), não
+    carregado dentro do processo Streamlit.
     """
     return {
-        "path": EMBEDDING_MODEL_ID,
+        "path": "external",
+        "method": "external",
+        "transform": EMBEDDING_TRANSFORM_PATH,
         "content": True,
+        "instructions": {
+            "query": "query: ",
+            "data": "passage: ",
+        },
     }
 
 
@@ -796,8 +809,9 @@ def search_with_backend(
     Executa uma busca semântica usando uma instância de ``Embeddings`` já carregada.
 
     Receber o backend como parâmetro (em vez de criá-lo internamente) evita
-    recarregar o modelo de ~500 MB a cada pergunta do usuário. A instância deve
+    recarregar o índice txtai a cada pergunta do usuário. A instância deve
     ser gerenciada pelo chamador (ex.: ``st.cache_resource`` no Streamlit).
+    A vetorização em si ocorre no serviço TEI externo.
 
     Quando ``project_ids`` é informado, busca ``limit * 5`` candidatos e filtra
     por projeto antes de truncar — compensa hits de outros projetos no top-K bruto.

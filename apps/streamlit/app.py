@@ -187,7 +187,8 @@ def _txtai_backend_cached(mtime_key: float):
     Carrega e armazena a instância ``Embeddings`` do txtai em cache de processo.
 
     O ``st.cache_resource`` mantém a instância em memória entre reruns do
-    Streamlit, evitando recarregar o modelo de ~500 MB a cada interação.
+    Streamlit, evitando recarregar o índice vetorial a cada interação.
+    Os vetores são calculados pelo contêiner TEI (``EMBEDDING_SERVICE_URL``).
 
     O parâmetro ``mtime_key`` é o timestamp de modificação do manifesto
     (obtido via ``index_mtime()``). Quando o índice é reconstruído, esse valor
@@ -990,7 +991,7 @@ def _tab_indexacao_rag(scans: list[ProjectScan] | None) -> None:
             max_value=4000,
             value=720,
             step=20,
-            help="O modelo MPNet usa até ~128 tokens; 720 caracteres é o padrão de indexação.",
+            help="E5-small suporta até ~512 tokens; 720 caracteres (~150–180 tokens) é o padrão.",
             key="dev_rag_chunk_chars",
         )
     with c2:
