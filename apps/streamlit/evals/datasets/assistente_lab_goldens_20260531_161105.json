@@ -1,0 +1,1052 @@
+[
+  {
+    "input": "Qual a validade do antígeno recombinante Chikungunya E1 lote LT260325 no projeto de validação de lote piloto?",
+    "expected_output": "O antígeno recombinante Chikungunya E1 [2,2 mg/ml], lote LT260325 tem validade 26/03/2027, conforme planejamento 1a (07/04/2026).",
+    "context": [
+      "Item 1 — Nome/Concentração: Antígeno recombinante Chikungunya E1 [2,2 mg/ml] — Fabricante/Código: LifeScience/CKV220223 — Lote/ativo: LT260325 — Validade: 26/03/2027"
+    ],
+    "comments": "Fonte: planning/1a.docx",
+    "additional_metadata": {
+      "category": "rag",
+      "requires_index": true,
+      "requires_olap": false,
+      "requires_ml_model": false,
+      "tags": [
+        "rag",
+        "chikungunya",
+        "validade"
+      ],
+      "golden_id": "rag-chik-lt260325-validade",
+      "expected_routes": {
+        "documents": true,
+        "spreadsheets": false,
+        "ml_prediction": false
+      },
+      "project_ids": [
+        "252 - Teste rápido Chikungunya"
+      ]
+    }
+  },
+  {
+    "input": "Qual o objetivo do planejamento 1b do teste rápido Chikungunya executado em 10/04/2026?",
+    "expected_output": "Validar o lote de antígeno recombinante comercial LT310625 como controle de reação, com execução em 10/04/2026 (planejamento de 09/04/2026).",
+    "context": [
+      "Objetivo: Validar lote de antígeno recombinante comercial LT310625 como controle de reação.",
+      "Planejamento: 09/04/2026 — Execução: 10/04/2026"
+    ],
+    "comments": "Fonte: planning/Planejamento_1b.docx",
+    "additional_metadata": {
+      "category": "rag",
+      "requires_index": true,
+      "requires_olap": false,
+      "requires_ml_model": false,
+      "tags": [
+        "rag",
+        "chikungunya",
+        "objetivo"
+      ],
+      "golden_id": "rag-chik-lt310625-objetivo",
+      "expected_routes": {
+        "documents": true,
+        "spreadsheets": false,
+        "ml_prediction": false
+      },
+      "project_ids": [
+        "252 - Teste rápido Chikungunya"
+      ]
+    }
+  },
+  {
+    "input": "No ensaio de validação do lote Chikungunya, qual volume de antígeno diluir para obter 0,2 mg/ml?",
+    "expected_output": "V1 = 0,045 ml (45 µl) de antígeno para obter 0,2 mg/ml.",
+    "context": [
+      "Diluição do antígeno: C1 x V1 = C2 x V2 — 2,2 x V1 = 0,2 x 0,5 — V1 = 0,045 ml ou 45 ul."
+    ],
+    "comments": "Fonte: planning/1a.docx",
+    "additional_metadata": {
+      "category": "rag",
+      "requires_index": true,
+      "requires_olap": false,
+      "requires_ml_model": false,
+      "tags": [
+        "rag",
+        "chikungunya",
+        "calculo"
+      ],
+      "golden_id": "rag-chik-diluicao-v1",
+      "expected_routes": {
+        "documents": true,
+        "spreadsheets": false,
+        "ml_prediction": false
+      },
+      "project_ids": [
+        "252 - Teste rápido Chikungunya"
+      ]
+    }
+  },
+  {
+    "input": "Quais IDs de amostra de origem LACEN-PE foram usados na validação Chikungunya (planejamento 1a)?",
+    "expected_output": "Amostras LACEN-PE: 265, 266, 267, 302, 315 e 360.",
+    "context": [
+      "Item 1 — ID amostra: 265 — Origem: LACEN-PE",
+      "Item 2 — ID amostra: 266 — Origem: LACEN-PE",
+      "Item 6 — ID amostra: 360 — Origem: LACEN-PE"
+    ],
+    "comments": "Fonte: planning/1a.docx — tabela Seleção de amostras",
+    "additional_metadata": {
+      "category": "rag",
+      "requires_index": true,
+      "requires_olap": false,
+      "requires_ml_model": false,
+      "tags": [
+        "rag",
+        "chikungunya",
+        "amostras"
+      ],
+      "golden_id": "rag-chik-amostras-lacen",
+      "expected_routes": {
+        "documents": true,
+        "spreadsheets": false,
+        "ml_prediction": false
+      },
+      "project_ids": [
+        "252 - Teste rápido Chikungunya"
+      ]
+    }
+  },
+  {
+    "input": "Em quanto tempo deve ser feita a leitura do teste rápido Chikungunya no protocolo 1a?",
+    "expected_output": "Leitura de resultado entre 15 e 20 minutos.",
+    "context": [
+      "Metodologia: Aplicar 20 ul de amostra no poço de amostra; aplicar 3 gotas de tampão de corrida (ou 90 ul com micropipeta) no poço de tampão. Leitura de resultado entre 15 e 20 minutos."
+    ],
+    "comments": "Fonte: planning/1a.docx",
+    "additional_metadata": {
+      "category": "rag",
+      "requires_index": true,
+      "requires_olap": false,
+      "requires_ml_model": false,
+      "tags": [
+        "rag",
+        "chikungunya",
+        "metodologia"
+      ],
+      "golden_id": "rag-chik-metodologia-leitura",
+      "expected_routes": {
+        "documents": true,
+        "spreadsheets": false,
+        "ml_prediction": false
+      },
+      "project_ids": [
+        "252 - Teste rápido Chikungunya"
+      ]
+    }
+  },
+  {
+    "input": "Qual fabricante, código, lote e validade do antígeno recombinante Dengue usado na sensibilização de placas ELISA?",
+    "expected_output": "Antígeno recombinante Dengue [980 ng/ml], fabricante/código: Thermo/CKV220223, lote: DV56H09, validade 31/01/2028.",
+    "context": [
+      "Item 1 — Antígeno recombinante Dengue [980 ng/ml] — Thermo/CKV220223 — Lote: DV56H09 — Validade: 31/01/2028"
+    ],
+    "comments": "Fonte: plannig/planning/20260204_Sensibilizacao_placa.docx",
+    "additional_metadata": {
+      "category": "rag",
+      "requires_index": true,
+      "requires_olap": false,
+      "requires_ml_model": false,
+      "tags": [
+        "rag",
+        "dengue",
+        "insumo"
+      ],
+      "golden_id": "rag-dengue-antigeno-lote",
+      "expected_routes": {
+        "documents": true,
+        "spreadsheets": false,
+        "ml_prediction": false
+      },
+      "project_ids": [
+        "253 - ELISA indireto Dengue"
+      ]
+    }
+  },
+  {
+    "input": "Quais tempos de sensibilização de placa foram planejados no ensaio Dengue de 04/02/2026?",
+    "expected_output": "Sensibilização da placa com 1, 2, 4 e 16 horas (overnight) a 4°C.",
+    "context": [
+      "Observação: será feito a sensibilização da placa com 1, 2, 4 e 16 horas (overnight) em 4°C.",
+      "Selar as placas e deixar na geladeira por tempos de 1, 2, 4 e 16 horas (overnight), tirando uma placa em cada tempo."
+    ],
+    "comments": "Fonte: sensibilização placa",
+    "additional_metadata": {
+      "category": "rag",
+      "requires_index": true,
+      "requires_olap": false,
+      "requires_ml_model": false,
+      "tags": [
+        "rag",
+        "dengue",
+        "sensibilizacao"
+      ],
+      "golden_id": "rag-dengue-tempos-sensibilizacao",
+      "expected_routes": {
+        "documents": true,
+        "spreadsheets": false,
+        "ml_prediction": false
+      },
+      "project_ids": [
+        "253 - ELISA indireto Dengue"
+      ]
+    }
+  },
+  {
+    "input": "Qual o lote de placas gerado na sensibilização Dengue registrado no documento de 04/02/2026?",
+    "expected_output": "Lote de placas gerada: PR0802202612.",
+    "context": [
+      "Lote de placas gerada: PR0802202612"
+    ],
+    "comments": "Fonte: 20260204Sensibilizacaoplaca.docx (campo extra vs versão _Sensibilizacao_)",
+    "additional_metadata": {
+      "category": "rag",
+      "requires_index": true,
+      "requires_olap": false,
+      "requires_ml_model": false,
+      "tags": [
+        "rag",
+        "dengue",
+        "lote"
+      ],
+      "golden_id": "rag-dengue-lote-placas",
+      "expected_routes": {
+        "documents": true,
+        "spreadsheets": false,
+        "ml_prediction": false
+      },
+      "project_ids": [
+        "253 - ELISA indireto Dengue"
+      ]
+    }
+  },
+  {
+    "input": "Quais amostras positivas foi usado no ensaio de otimização de tempo de sensibilização Dengue?",
+    "expected_output": "Amostras positivas no ELISA comercial: 12, 33 e 36.",
+    "context": [
+      "Item 1 — ID amostra: 12 — Caracterização ELISA comercial: Positivo",
+      "Item 2 — ID amostra: 33 — Caracterização ELISA comercial: Positivo",
+      "Item 3 — ID amostra: 36 — Caracterização ELISA comercial: Positivo"
+    ],
+    "comments": "Fonte: 20260209ensaiootimizacaotempo.docx",
+    "additional_metadata": {
+      "category": "rag",
+      "requires_index": true,
+      "requires_olap": false,
+      "requires_ml_model": false,
+      "tags": [
+        "rag",
+        "dengue",
+        "amostras"
+      ],
+      "golden_id": "rag-dengue-amostras-positivas-tempo",
+      "expected_routes": {
+        "documents": true,
+        "spreadsheets": false,
+        "ml_prediction": false
+      },
+      "project_ids": [
+        "253 - ELISA indireto Dengue"
+      ]
+    }
+  },
+  {
+    "input": "Quais condições de temperatura foram avaliadas na otimização de incubação de amostras Dengue?",
+    "expected_output": "Temperatura ambiente e 37 °C na etapa de incubação de amostras.",
+    "context": [
+      "Objetivo: Avaliar placas sensibilizadas com diferentes condições de temperatura na etapa de incubação de amostras.",
+      "Observação: serão avaliadas temperatura ambiente e 37°C."
+    ],
+    "comments": "Fonte: 20260210ensaiootimizacaotemperatura.docx",
+    "additional_metadata": {
+      "category": "rag",
+      "requires_index": true,
+      "requires_olap": false,
+      "requires_ml_model": false,
+      "tags": [
+        "rag",
+        "dengue",
+        "temperatura"
+      ],
+      "golden_id": "rag-dengue-temperatura-incubacao",
+      "expected_routes": {
+        "documents": true,
+        "spreadsheets": false,
+        "ml_prediction": false
+      },
+      "project_ids": [
+        "253 - ELISA indireto Dengue"
+      ]
+    }
+  },
+  {
+    "input": "Quantas amostras constam na planilha amostras_dengue.xlsx do projeto ELISA indireto Dengue?",
+    "expected_output": "Segundo results/amostras_dengue.xlsx (aba Amostras): 320 amostras registradas.",
+    "comments": "Contagem de linhas da planilha Amostras (320 registros).",
+    "additional_metadata": {
+      "category": "olap",
+      "requires_index": false,
+      "requires_olap": true,
+      "requires_ml_model": false,
+      "tags": [
+        "olap",
+        "dengue",
+        "contagem"
+      ],
+      "golden_id": "olap-dengue-total-amostras",
+      "expected_routes": {
+        "documents": false,
+        "spreadsheets": true,
+        "ml_prediction": false
+      },
+      "project_ids": [
+        "253 - ELISA indireto Dengue"
+      ]
+    }
+  },
+  {
+    "input": "Qual a idade média das amostras na planilha amostras_dengue?",
+    "expected_output": "Segundo results/amostras_dengue.xlsx (coluna Idade): idade média ≈ 53,4 anos (53,41 arredondado).",
+    "comments": "Média aritmética da coluna Idade.",
+    "additional_metadata": {
+      "category": "olap",
+      "requires_index": false,
+      "requires_olap": true,
+      "requires_ml_model": false,
+      "tags": [
+        "olap",
+        "dengue",
+        "media"
+      ],
+      "golden_id": "olap-dengue-media-idade",
+      "expected_routes": {
+        "documents": false,
+        "spreadsheets": true,
+        "ml_prediction": false
+      },
+      "project_ids": [
+        "253 - ELISA indireto Dengue"
+      ]
+    }
+  },
+  {
+    "input": "Quantos pacientes têm idade superior a 80 anos em amostras_dengue?",
+    "expected_output": "Segundo results/amostras_dengue.xlsx (coluna Idade): 38 pacientes com idade > 80 anos.",
+    "comments": "Filtro Idade > 80.",
+    "additional_metadata": {
+      "category": "olap",
+      "requires_index": false,
+      "requires_olap": true,
+      "requires_ml_model": false,
+      "tags": [
+        "olap",
+        "dengue",
+        "filtro"
+      ],
+      "golden_id": "olap-dengue-idade-maior-80",
+      "expected_routes": {
+        "documents": false,
+        "spreadsheets": true,
+        "ml_prediction": false
+      },
+      "project_ids": [
+        "253 - ELISA indireto Dengue"
+      ]
+    }
+  },
+  {
+    "input": "Quantos dias de sintoma tem a amostra ID 133 na planilha amostras_dengue?",
+    "expected_output": "Segundo results/amostras_dengue.xlsx: amostra 133 (Yasmin Ribeiro) — 1 dia de sintoma (coluna Dias de sintoma).",
+    "comments": "Lookup por ID amostra = 133.",
+    "additional_metadata": {
+      "category": "olap",
+      "requires_index": false,
+      "requires_olap": true,
+      "requires_ml_model": false,
+      "tags": [
+        "olap",
+        "dengue",
+        "lookup"
+      ],
+      "golden_id": "olap-dengue-dias-sintoma-amostra-133",
+      "expected_routes": {
+        "documents": false,
+        "spreadsheets": true,
+        "ml_prediction": false
+      },
+      "project_ids": [
+        "253 - ELISA indireto Dengue"
+      ]
+    }
+  },
+  {
+    "input": "Quantas amostras positivas há no Compilado_resultado_otimizacao.xlsx?",
+    "expected_output": "Segundo results/Compilado_resultado_otimizacao.xlsx (coluna Resultado caracterização ELISA comercial): 89 amostras Positivo.",
+    "comments": "Compilado_resultado_otimizacao.xlsx — coluna Resultado caracterização.",
+    "additional_metadata": {
+      "category": "olap",
+      "requires_index": false,
+      "requires_olap": true,
+      "requires_ml_model": false,
+      "tags": [
+        "olap",
+        "dengue",
+        "contagem"
+      ],
+      "golden_id": "olap-dengue-compilado-positivos",
+      "expected_routes": {
+        "documents": false,
+        "spreadsheets": true,
+        "ml_prediction": false
+      },
+      "project_ids": [
+        "253 - ELISA indireto Dengue"
+      ]
+    }
+  },
+  {
+    "input": "Quantas amostras negativas existem no compilado de otimização Dengue?",
+    "expected_output": "Segundo results/Compilado_resultado_otimizacao.xlsx (coluna Resultado caracterização ELISA comercial): 231 amostras Negativo.",
+    "comments": "320 total − 89 positivos = 231 negativos.",
+    "additional_metadata": {
+      "category": "olap",
+      "requires_index": false,
+      "requires_olap": true,
+      "requires_ml_model": false,
+      "tags": [
+        "olap",
+        "dengue",
+        "contagem"
+      ],
+      "golden_id": "olap-dengue-compilado-negativos",
+      "expected_routes": {
+        "documents": false,
+        "spreadsheets": true,
+        "ml_prediction": false
+      },
+      "project_ids": [
+        "253 - ELISA indireto Dengue"
+      ]
+    }
+  },
+  {
+    "input": "Qual a absorbância com sensibilização 16 h para a amostra 12 no compilado de otimização?",
+    "expected_output": "Segundo results/Compilado_resultado_otimizacao.xlsx: amostra 12 (Positivo) — ABS Tempo sensibilização 16h = 2,344.",
+    "comments": "Compilado — coluna ABS Tempo sensibilização 16h, ID 12.",
+    "additional_metadata": {
+      "category": "olap",
+      "requires_index": false,
+      "requires_olap": true,
+      "requires_ml_model": false,
+      "tags": [
+        "olap",
+        "dengue",
+        "absorbancia"
+      ],
+      "golden_id": "olap-dengue-abs-16h-amostra-12",
+      "expected_routes": {
+        "documents": false,
+        "spreadsheets": true,
+        "ml_prediction": false
+      },
+      "project_ids": [
+        "253 - ELISA indireto Dengue"
+      ]
+    }
+  },
+  {
+    "input": "Qual a média de absorbância 16 h entre amostras positivas no compilado Dengue?",
+    "expected_output": "Segundo results/Compilado_resultado_otimizacao.xlsx (Positivo, coluna ABS Tempo sensibilização 16h): média ≈ 2,54 (2,535).",
+    "comments": "Média da coluna 16h filtrando Positivo (valores numéricos).",
+    "additional_metadata": {
+      "category": "olap",
+      "requires_index": false,
+      "requires_olap": true,
+      "requires_ml_model": false,
+      "tags": [
+        "olap",
+        "dengue",
+        "media"
+      ],
+      "golden_id": "olap-dengue-media-abs-16h-positivos",
+      "expected_routes": {
+        "documents": false,
+        "spreadsheets": true,
+        "ml_prediction": false
+      },
+      "project_ids": [
+        "253 - ELISA indireto Dengue"
+      ]
+    }
+  },
+  {
+    "input": "Qual a média de ABS Temperatura amostra 37 °C para amostras negativas no compilado?",
+    "expected_output": "Segundo results/Compilado_resultado_otimizacao.xlsx (Negativo, coluna ABS Temperatura amostra 37°C): média ≈ 0,35 (0,349) entre registros com valor preenchido.",
+    "comments": "Média coluna 37°C entre Negativos com valor preenchido.",
+    "additional_metadata": {
+      "category": "olap",
+      "requires_index": false,
+      "requires_olap": true,
+      "requires_ml_model": false,
+      "tags": [
+        "olap",
+        "dengue",
+        "temperatura"
+      ],
+      "golden_id": "olap-dengue-media-abs-37-negativos",
+      "expected_routes": {
+        "documents": false,
+        "spreadsheets": true,
+        "ml_prediction": false
+      },
+      "project_ids": [
+        "253 - ELISA indireto Dengue"
+      ]
+    }
+  },
+  {
+    "input": "No Compilado_resultado_otimizacao.xlsx, entre amostras positivas com absorbância de sensibilização 4 h e 16 h preenchidas, em quantas a ABS 16 h é maior que a ABS 4 h?",
+    "expected_output": "Segundo results/Compilado_resultado_otimizacao.xlsx (Positivo, colunas ABS Tempo sensibilização 4h e 16h): 23 amostras têm ABS 16h > ABS 4h; 44 têm ABS 16h < ABS 4h (67 amostras com ambas colunas preenchidas).",
+    "comments": "Comparação simultânea das colunas 4h e 16h no compilado.",
+    "additional_metadata": {
+      "category": "olap",
+      "requires_index": false,
+      "requires_olap": true,
+      "requires_ml_model": false,
+      "tags": [
+        "olap",
+        "dengue",
+        "comparacao",
+        "multi-coluna"
+      ],
+      "golden_id": "olap-dengue-compilado-compara-16h-4h",
+      "expected_routes": {
+        "documents": false,
+        "spreadsheets": true,
+        "ml_prediction": false
+      },
+      "project_ids": [
+        "253 - ELISA indireto Dengue"
+      ]
+    }
+  },
+  {
+    "input": "Prediga log_Aff para o par anticorpo–antígeno de literatura abaixo (AbRank).\nAb_heavy_chain_seq: QMQLVQSGTEVKKPGESLKISCKGSGYGFITYWIGWVRQMPGKGLEWMGIIYPGDSETRYSPSFQGQVTISADKSINTAYLQWSSLKASDTAIYYCAGGSGISTPMDVWGQGTTVTVSSASTKGPSVFPLAPSSKSTSGGTAALGCLVKDYFPEPVTVSWNSGALTSGVHTFPAVLQSSGLYSLSSVVTVPSSSLGTQTYICNVNHKPSNTKVDKKVEPKSC\nAb_light_chain_seq: DIQLTQSPDSLAVSLGERATINCKSSQSVLYSSINKNYLAWYQQKPGQPPKLLIYWASTRESGVPDRFSGSGSGTDFTLTISSLQAEDVAVYYCQQYYSTPYTFGQGTKVEIKRTVAAPSVFIFPPSDEQLKSGTASVVCLLNNFYPREAKVQWKVDNALQSGNSQESVTEQDSKDSTYSLSSTLTLSKADYEKHKVYACEVTHQGLSSPVTKSFNRGECS\nAg_seq: RVQPTESIVRFPNITNLCPFGEVFNATRFASVYAWNRKRISNCVADYSVLYNSASFSTFKCYGVSPTKLNDLCFTNVYADSFVIRGDEVRQIAPGQTGKIADYNYKLPDDFTGCVIAWNSNNLDSKVGGNYNYLYRLFRKSNLKPFERDISTEIYQAGSTPCNGVEGFNCYFPLQSYGFQPTNGVGYQPYRVVVLSFELLHAPATVCGPKKSTNLVKNKCVNFSGHHHHHH",
+    "expected_output": "Retornar o score predito de log_Aff para o par de literatura \"CR3022 × SARS-CoV-2 Spike S1/RBD\", via modelo .pkl AbRank. Cada par deve ser avaliado separadamente — congele o valor numérico após a primeira predição manual com o .pkl ativo.",
+    "comments": "Par de literatura: CR3022 × SARS-CoV-2 Spike S1/RBD. Sequências completas H/L/Ag conforme PDB/literatura; não consulta projetos 252/253.",
+    "additional_metadata": {
+      "category": "ml",
+      "requires_index": false,
+      "requires_olap": false,
+      "requires_ml_model": true,
+      "tags": [
+        "ml",
+        "abrank",
+        "literature",
+        "cr3022-sars2-rbd"
+      ],
+      "golden_id": "ml-literature-cr3022-sars2-rbd-01",
+      "expected_routes": {
+        "documents": false,
+        "spreadsheets": false,
+        "ml_prediction": true
+      }
+    }
+  },
+  {
+    "input": "Qual a afinidade predita log_Aff do anticorpo 1F1 contra a cadeia HA2 da hemaglutinina?\nAb_heavy_chain_seq: QVQLVQSGGGVVQPRRSLRLSCAASGFTFSSYAMHWVRQAPGKGLEWVAVISYDGRNKYYADSVKGRFTVSRDNSKNTLYLQMNSLRAEDTSVYYCARELLMDYYDHIGYSPGPTWGQGTLVTVSSASTKGPSVFPLAPSSKSTSGGTAALGCLVKDYFPEPVTVSWNSGALTSGVHTFPAVLQSSGLYSLSSVVTVPSSSLGTQTYICNVNHKPSNTKVDKRVEPKSCDK\nAb_light_chain_seq: QPVLTQPPSASGSPGQRVTISCSGSSSNIGSYTVNWYQQLPGTAPKLLIYSLNQRPSGVPDRFSGSKSGTSASLAISGLQSEDEAVYYCAAWDDSLSAHVVFGGGTKLTVLGQPKAAPSVTLFPPSSEELQANKATLVCLISDFYPGAVTVAWKADSSPVKAGVETTTPSKQSNNKYAASSYLSLTPEQWKSHRSYSCQVTHEGSTVEKTVAPTECS\nAg_seq: GLFGAIAGFIEGGWTGMIDGWYGYHHQNEQGSGYAADQKSTQNAIDGITNKVNSVIEKMNTQFTAVGKEFNNLERRIENLNKKVDDGFLDIWTYNAELLVLLENERTLDFHDSNVRNLYEKVKSQLKNNAKEIGNGCFEFYHKCDDACMESVRNGTYDYPKYSEESKLNREEIDGV",
+    "expected_output": "Retornar o score predito de log_Aff para o par de literatura \"Anticorpo 1F1 × hemaglutinina HA2 (PDB 4GXU)\", via modelo .pkl AbRank. Cada par deve ser avaliado separadamente — congele o valor numérico após a primeira predição manual com o .pkl ativo.",
+    "comments": "Par de literatura: Anticorpo 1F1 × hemaglutinina HA2 (PDB 4GXU). Sequências completas H/L/Ag conforme PDB/literatura; não consulta projetos 252/253.",
+    "additional_metadata": {
+      "category": "ml",
+      "requires_index": false,
+      "requires_olap": false,
+      "requires_ml_model": true,
+      "tags": [
+        "ml",
+        "abrank",
+        "literature",
+        "1f1-influenza-ha2"
+      ],
+      "golden_id": "ml-literature-1f1-influenza-ha2-02",
+      "expected_routes": {
+        "documents": false,
+        "spreadsheets": false,
+        "ml_prediction": true
+      }
+    }
+  },
+  {
+    "input": "Estime log_Aff do anticorpo 1F1 contra a cadeia HA1 da hemaglutinina influenza A.\nAb_heavy_chain_seq: QVQLVQSGGGVVQPRRSLRLSCAASGFTFSSYAMHWVRQAPGKGLEWVAVISYDGRNKYYADSVKGRFTVSRDNSKNTLYLQMNSLRAEDTSVYYCARELLMDYYDHIGYSPGPTWGQGTLVTVSSASTKGPSVFPLAPSSKSTSGGTAALGCLVKDYFPEPVTVSWNSGALTSGVHTFPAVLQSSGLYSLSSVVTVPSSSLGTQTYICNVNHKPSNTKVDKRVEPKSCDK\nAb_light_chain_seq: QPVLTQPPSASGSPGQRVTISCSGSSSNIGSYTVNWYQQLPGTAPKLLIYSLNQRPSGVPDRFSGSKSGTSASLAISGLQSEDEAVYYCAAWDDSLSAHVVFGGGTKLTVLGQPKAAPSVTLFPPSSEELQANKATLVCLISDFYPGAVTVAWKADSSPVKAGVETTTPSKQSNNKYAASSYLSLTPEQWKSHRSYSCQVTHEGSTVEKTVAPTECS\nAg_seq: ADPGDTICIGYHANNSTDTVDTVLEKNVTVTHSVNLLEDSHNGKLCKLKGIAPLQLGKCNIAGWLLGNPECDLLLTASSWSYIVETSNSENGTCYPGDFIDYEELREQLSSVSSFEKFEIFPKTSSWPNHETTKGVTAACSYAGASSFYRNLLWLTKKGSSYPKLSKSYVNNKGKEVLVLWGVHHPPTGTDQQSLYQNADAYVSVGSSKYNRRFTPEIAARPKVRDQAGRMNYYWTLLEPGDTITFEATGNLIAPWYAFALNRGSGSGIITSDAPVHDCNTKCQTPHGAINSSLPFQNIHPVTIGECPKYVRSTKLRMATGLRNIPSIQSR",
+    "expected_output": "Retornar o score predito de log_Aff para o par de literatura \"Anticorpo 1F1 × hemaglutinina HA1 (PDB 4GXU)\", via modelo .pkl AbRank. Cada par deve ser avaliado separadamente — congele o valor numérico após a primeira predição manual com o .pkl ativo.",
+    "comments": "Par de literatura: Anticorpo 1F1 × hemaglutinina HA1 (PDB 4GXU). Sequências completas H/L/Ag conforme PDB/literatura; não consulta projetos 252/253.",
+    "additional_metadata": {
+      "category": "ml",
+      "requires_index": false,
+      "requires_olap": false,
+      "requires_ml_model": true,
+      "tags": [
+        "ml",
+        "abrank",
+        "literature",
+        "1f1-influenza-ha1"
+      ],
+      "golden_id": "ml-literature-1f1-influenza-ha1-03",
+      "expected_routes": {
+        "documents": false,
+        "spreadsheets": false,
+        "ml_prediction": true
+      }
+    }
+  },
+  {
+    "input": "Faça inferência de afinidade AbRank para HyHEL-10 contra lisozima (PDB 3HFM).\nAb_heavy_chain_seq: DVQLQESGPSLVKPSQTLSLTCSVTGDSITSDYWSWIRKFPGNRLEYMGYVSYSGSTYYNPSLKSRISITRDTSKNQYYLDLNSVTTEDTATYYCANWDGDYWGQGTLVTVSAAKTTPPSVYPLAPGSAAQTNSMVTLGCLVKGYFPEPVTVTWNSGSLSSGVHTFPAVLQSDLYTLSSSVTVPSSPRPSETVTCNVAHPASSTKVDKKIVPRDC\nAb_light_chain_seq: DIVLTQSPATLSVTPGNSVSLSCRASQSIGNNLHWYQQKSHESPRLLIKYASQSISGIPSRFSGSGSGTDFTLSINSVETEDFGMYFCQQSNSWPYTFGGGTKLEIKRADAAPTVSIFPPSSEQLTSGGASVVCFLNNFYPKDINVKWKIDGSERQNGVLNSWTDQDSKDSTYSMSSTLTLTKDEYERHNSYTCEATHKTSTSPIVKSFNRNEC\nAg_seq: KVFGRCELAAAMKRHGLDNYRGYSLGNWVCAAKFESNFNTQATNRNTDGSTDYGILQINSRWWCNDGRTPGSRNLCNIPCSALLSSDITASVNCAKKIVSDGNGMNAWVAWRNRCKGTDVQAWIRGCRL",
+    "expected_output": "Retornar o score predito de log_Aff para o par de literatura \"HyHEL-10 × lisozima de clara de ovo (PDB 3HFM)\", via modelo .pkl AbRank. Cada par deve ser avaliado separadamente — congele o valor numérico após a primeira predição manual com o .pkl ativo.",
+    "comments": "Par de literatura: HyHEL-10 × lisozima de clara de ovo (PDB 3HFM). Sequências completas H/L/Ag conforme PDB/literatura; não consulta projetos 252/253.",
+    "additional_metadata": {
+      "category": "ml",
+      "requires_index": false,
+      "requires_olap": false,
+      "requires_ml_model": true,
+      "tags": [
+        "ml",
+        "abrank",
+        "literature",
+        "hyhel10-lysozyme"
+      ],
+      "golden_id": "ml-literature-hyhel10-lysozyme-04",
+      "expected_routes": {
+        "documents": false,
+        "spreadsheets": false,
+        "ml_prediction": true
+      }
+    }
+  },
+  {
+    "input": "Use o modelo ML para prever log_Aff do CR3022 contra o RBD do Spike SARS-CoV-2.\nAb_heavy_chain_seq: QMQLVQSGTEVKKPGESLKISCKGSGYGFITYWIGWVRQMPGKGLEWMGIIYPGDSETRYSPSFQGQVTISADKSINTAYLQWSSLKASDTAIYYCAGGSGISTPMDVWGQGTTVTVSSASTKGPSVFPLAPSSKSTSGGTAALGCLVKDYFPEPVTVSWNSGALTSGVHTFPAVLQSSGLYSLSSVVTVPSSSLGTQTYICNVNHKPSNTKVDKKVEPKSC\nAb_light_chain_seq: DIQLTQSPDSLAVSLGERATINCKSSQSVLYSSINKNYLAWYQQKPGQPPKLLIYWASTRESGVPDRFSGSGSGTDFTLTISSLQAEDVAVYYCQQYYSTPYTFGQGTKVEIKRTVAAPSVFIFPPSDEQLKSGTASVVCLLNNFYPREAKVQWKVDNALQSGNSQESVTEQDSKDSTYSLSSTLTLSKADYEKHKVYACEVTHQGLSSPVTKSFNRGECS\nAg_seq: RVQPTESIVRFPNITNLCPFGEVFNATRFASVYAWNRKRISNCVADYSVLYNSASFSTFKCYGVSPTKLNDLCFTNVYADSFVIRGDEVRQIAPGQTGKIADYNYKLPDDFTGCVIAWNSNNLDSKVGGNYNYLYRLFRKSNLKPFERDISTEIYQAGSTPCNGVEGFNCYFPLQSYGFQPTNGVGYQPYRVVVLSFELLHAPATVCGPKKSTNLVKNKCVNFSGHHHHHH",
+    "expected_output": "Retornar o score predito de log_Aff para o par de literatura \"CR3022 × SARS-CoV-2 Spike S1/RBD\", via modelo .pkl AbRank. Cada par deve ser avaliado separadamente — congele o valor numérico após a primeira predição manual com o .pkl ativo.",
+    "comments": "Par de literatura: CR3022 × SARS-CoV-2 Spike S1/RBD. Sequências completas H/L/Ag conforme PDB/literatura; não consulta projetos 252/253.",
+    "additional_metadata": {
+      "category": "ml",
+      "requires_index": false,
+      "requires_olap": false,
+      "requires_ml_model": true,
+      "tags": [
+        "ml",
+        "abrank",
+        "literature",
+        "cr3022-sars2-rbd"
+      ],
+      "golden_id": "ml-literature-cr3022-sars2-rbd-05",
+      "expected_routes": {
+        "documents": false,
+        "spreadsheets": false,
+        "ml_prediction": true
+      }
+    }
+  },
+  {
+    "input": "Calcule log_Aff predito para 1F1 × HA2 com as sequências PDB 4GXU.\nAb_heavy_chain_seq: QVQLVQSGGGVVQPRRSLRLSCAASGFTFSSYAMHWVRQAPGKGLEWVAVISYDGRNKYYADSVKGRFTVSRDNSKNTLYLQMNSLRAEDTSVYYCARELLMDYYDHIGYSPGPTWGQGTLVTVSSASTKGPSVFPLAPSSKSTSGGTAALGCLVKDYFPEPVTVSWNSGALTSGVHTFPAVLQSSGLYSLSSVVTVPSSSLGTQTYICNVNHKPSNTKVDKRVEPKSCDK\nAb_light_chain_seq: QPVLTQPPSASGSPGQRVTISCSGSSSNIGSYTVNWYQQLPGTAPKLLIYSLNQRPSGVPDRFSGSKSGTSASLAISGLQSEDEAVYYCAAWDDSLSAHVVFGGGTKLTVLGQPKAAPSVTLFPPSSEELQANKATLVCLISDFYPGAVTVAWKADSSPVKAGVETTTPSKQSNNKYAASSYLSLTPEQWKSHRSYSCQVTHEGSTVEKTVAPTECS\nAg_seq: GLFGAIAGFIEGGWTGMIDGWYGYHHQNEQGSGYAADQKSTQNAIDGITNKVNSVIEKMNTQFTAVGKEFNNLERRIENLNKKVDDGFLDIWTYNAELLVLLENERTLDFHDSNVRNLYEKVKSQLKNNAKEIGNGCFEFYHKCDDACMESVRNGTYDYPKYSEESKLNREEIDGV",
+    "expected_output": "Retornar o score predito de log_Aff para o par de literatura \"Anticorpo 1F1 × hemaglutinina HA2 (PDB 4GXU)\", via modelo .pkl AbRank. Cada par deve ser avaliado separadamente — congele o valor numérico após a primeira predição manual com o .pkl ativo.",
+    "comments": "Par de literatura: Anticorpo 1F1 × hemaglutinina HA2 (PDB 4GXU). Sequências completas H/L/Ag conforme PDB/literatura; não consulta projetos 252/253.",
+    "additional_metadata": {
+      "category": "ml",
+      "requires_index": false,
+      "requires_olap": false,
+      "requires_ml_model": true,
+      "tags": [
+        "ml",
+        "abrank",
+        "literature",
+        "1f1-influenza-ha2"
+      ],
+      "golden_id": "ml-literature-1f1-influenza-ha2-06",
+      "expected_routes": {
+        "documents": false,
+        "spreadsheets": false,
+        "ml_prediction": true
+      }
+    }
+  },
+  {
+    "input": "Rode predição log_Aff: mesmo 1F1, antígeno HA1 (epítopo distinto de HA2).\nAb_heavy_chain_seq: QVQLVQSGGGVVQPRRSLRLSCAASGFTFSSYAMHWVRQAPGKGLEWVAVISYDGRNKYYADSVKGRFTVSRDNSKNTLYLQMNSLRAEDTSVYYCARELLMDYYDHIGYSPGPTWGQGTLVTVSSASTKGPSVFPLAPSSKSTSGGTAALGCLVKDYFPEPVTVSWNSGALTSGVHTFPAVLQSSGLYSLSSVVTVPSSSLGTQTYICNVNHKPSNTKVDKRVEPKSCDK\nAb_light_chain_seq: QPVLTQPPSASGSPGQRVTISCSGSSSNIGSYTVNWYQQLPGTAPKLLIYSLNQRPSGVPDRFSGSKSGTSASLAISGLQSEDEAVYYCAAWDDSLSAHVVFGGGTKLTVLGQPKAAPSVTLFPPSSEELQANKATLVCLISDFYPGAVTVAWKADSSPVKAGVETTTPSKQSNNKYAASSYLSLTPEQWKSHRSYSCQVTHEGSTVEKTVAPTECS\nAg_seq: ADPGDTICIGYHANNSTDTVDTVLEKNVTVTHSVNLLEDSHNGKLCKLKGIAPLQLGKCNIAGWLLGNPECDLLLTASSWSYIVETSNSENGTCYPGDFIDYEELREQLSSVSSFEKFEIFPKTSSWPNHETTKGVTAACSYAGASSFYRNLLWLTKKGSSYPKLSKSYVNNKGKEVLVLWGVHHPPTGTDQQSLYQNADAYVSVGSSKYNRRFTPEIAARPKVRDQAGRMNYYWTLLEPGDTITFEATGNLIAPWYAFALNRGSGSGIITSDAPVHDCNTKCQTPHGAINSSLPFQNIHPVTIGECPKYVRSTKLRMATGLRNIPSIQSR",
+    "expected_output": "Retornar o score predito de log_Aff para o par de literatura \"Anticorpo 1F1 × hemaglutinina HA1 (PDB 4GXU)\", via modelo .pkl AbRank. Cada par deve ser avaliado separadamente — congele o valor numérico após a primeira predição manual com o .pkl ativo.",
+    "comments": "Par de literatura: Anticorpo 1F1 × hemaglutinina HA1 (PDB 4GXU). Sequências completas H/L/Ag conforme PDB/literatura; não consulta projetos 252/253.",
+    "additional_metadata": {
+      "category": "ml",
+      "requires_index": false,
+      "requires_olap": false,
+      "requires_ml_model": true,
+      "tags": [
+        "ml",
+        "abrank",
+        "literature",
+        "1f1-influenza-ha1"
+      ],
+      "golden_id": "ml-literature-1f1-influenza-ha1-07",
+      "expected_routes": {
+        "documents": false,
+        "spreadsheets": false,
+        "ml_prediction": true
+      }
+    }
+  },
+  {
+    "input": "Inferir score de afinidade log_Aff para Fab HyHEL-10 × lisozima de Gallus gallus.\nAb_heavy_chain_seq: DVQLQESGPSLVKPSQTLSLTCSVTGDSITSDYWSWIRKFPGNRLEYMGYVSYSGSTYYNPSLKSRISITRDTSKNQYYLDLNSVTTEDTATYYCANWDGDYWGQGTLVTVSAAKTTPPSVYPLAPGSAAQTNSMVTLGCLVKGYFPEPVTVTWNSGSLSSGVHTFPAVLQSDLYTLSSSVTVPSSPRPSETVTCNVAHPASSTKVDKKIVPRDC\nAb_light_chain_seq: DIVLTQSPATLSVTPGNSVSLSCRASQSIGNNLHWYQQKSHESPRLLIKYASQSISGIPSRFSGSGSGTDFTLSINSVETEDFGMYFCQQSNSWPYTFGGGTKLEIKRADAAPTVSIFPPSSEQLTSGGASVVCFLNNFYPKDINVKWKIDGSERQNGVLNSWTDQDSKDSTYSMSSTLTLTKDEYERHNSYTCEATHKTSTSPIVKSFNRNEC\nAg_seq: KVFGRCELAAAMKRHGLDNYRGYSLGNWVCAAKFESNFNTQATNRNTDGSTDYGILQINSRWWCNDGRTPGSRNLCNIPCSALLSSDITASVNCAKKIVSDGNGMNAWVAWRNRCKGTDVQAWIRGCRL",
+    "expected_output": "Retornar o score predito de log_Aff para o par de literatura \"HyHEL-10 × lisozima de clara de ovo (PDB 3HFM)\", via modelo .pkl AbRank. Cada par deve ser avaliado separadamente — congele o valor numérico após a primeira predição manual com o .pkl ativo.",
+    "comments": "Par de literatura: HyHEL-10 × lisozima de clara de ovo (PDB 3HFM). Sequências completas H/L/Ag conforme PDB/literatura; não consulta projetos 252/253.",
+    "additional_metadata": {
+      "category": "ml",
+      "requires_index": false,
+      "requires_olap": false,
+      "requires_ml_model": true,
+      "tags": [
+        "ml",
+        "abrank",
+        "literature",
+        "hyhel10-lysozyme"
+      ],
+      "golden_id": "ml-literature-hyhel10-lysozyme-08",
+      "expected_routes": {
+        "documents": false,
+        "spreadsheets": false,
+        "ml_prediction": true
+      }
+    }
+  },
+  {
+    "input": "Predição ML de log_Aff — par 1F1 e fragmento HA2 (Influenza A).\nAb_heavy_chain_seq: QVQLVQSGGGVVQPRRSLRLSCAASGFTFSSYAMHWVRQAPGKGLEWVAVISYDGRNKYYADSVKGRFTVSRDNSKNTLYLQMNSLRAEDTSVYYCARELLMDYYDHIGYSPGPTWGQGTLVTVSSASTKGPSVFPLAPSSKSTSGGTAALGCLVKDYFPEPVTVSWNSGALTSGVHTFPAVLQSSGLYSLSSVVTVPSSSLGTQTYICNVNHKPSNTKVDKRVEPKSCDK\nAb_light_chain_seq: QPVLTQPPSASGSPGQRVTISCSGSSSNIGSYTVNWYQQLPGTAPKLLIYSLNQRPSGVPDRFSGSKSGTSASLAISGLQSEDEAVYYCAAWDDSLSAHVVFGGGTKLTVLGQPKAAPSVTLFPPSSEELQANKATLVCLISDFYPGAVTVAWKADSSPVKAGVETTTPSKQSNNKYAASSYLSLTPEQWKSHRSYSCQVTHEGSTVEKTVAPTECS\nAg_seq: GLFGAIAGFIEGGWTGMIDGWYGYHHQNEQGSGYAADQKSTQNAIDGITNKVNSVIEKMNTQFTAVGKEFNNLERRIENLNKKVDDGFLDIWTYNAELLVLLENERTLDFHDSNVRNLYEKVKSQLKNNAKEIGNGCFEFYHKCDDACMESVRNGTYDYPKYSEESKLNREEIDGV",
+    "expected_output": "Retornar o score predito de log_Aff para o par de literatura \"Anticorpo 1F1 × hemaglutinina HA2 (PDB 4GXU)\", via modelo .pkl AbRank. Cada par deve ser avaliado separadamente — congele o valor numérico após a primeira predição manual com o .pkl ativo.",
+    "comments": "Par de literatura: Anticorpo 1F1 × hemaglutinina HA2 (PDB 4GXU). Sequências completas H/L/Ag conforme PDB/literatura; não consulta projetos 252/253.",
+    "additional_metadata": {
+      "category": "ml",
+      "requires_index": false,
+      "requires_olap": false,
+      "requires_ml_model": true,
+      "tags": [
+        "ml",
+        "abrank",
+        "literature",
+        "1f1-influenza-ha2"
+      ],
+      "golden_id": "ml-literature-1f1-influenza-ha2-09",
+      "expected_routes": {
+        "documents": false,
+        "spreadsheets": false,
+        "ml_prediction": true
+      }
+    }
+  },
+  {
+    "input": "Estime a afinidade de ligação log_Aff para CR3022 × fragmento S1/RBD SARS-CoV-2.\nAb_heavy_chain_seq: QMQLVQSGTEVKKPGESLKISCKGSGYGFITYWIGWVRQMPGKGLEWMGIIYPGDSETRYSPSFQGQVTISADKSINTAYLQWSSLKASDTAIYYCAGGSGISTPMDVWGQGTTVTVSSASTKGPSVFPLAPSSKSTSGGTAALGCLVKDYFPEPVTVSWNSGALTSGVHTFPAVLQSSGLYSLSSVVTVPSSSLGTQTYICNVNHKPSNTKVDKKVEPKSC\nAb_light_chain_seq: DIQLTQSPDSLAVSLGERATINCKSSQSVLYSSINKNYLAWYQQKPGQPPKLLIYWASTRESGVPDRFSGSGSGTDFTLTISSLQAEDVAVYYCQQYYSTPYTFGQGTKVEIKRTVAAPSVFIFPPSDEQLKSGTASVVCLLNNFYPREAKVQWKVDNALQSGNSQESVTEQDSKDSTYSLSSTLTLSKADYEKHKVYACEVTHQGLSSPVTKSFNRGECS\nAg_seq: RVQPTESIVRFPNITNLCPFGEVFNATRFASVYAWNRKRISNCVADYSVLYNSASFSTFKCYGVSPTKLNDLCFTNVYADSFVIRGDEVRQIAPGQTGKIADYNYKLPDDFTGCVIAWNSNNLDSKVGGNYNYLYRLFRKSNLKPFERDISTEIYQAGSTPCNGVEGFNCYFPLQSYGFQPTNGVGYQPYRVVVLSFELLHAPATVCGPKKSTNLVKNKCVNFSGHHHHHH",
+    "expected_output": "Retornar o score predito de log_Aff para o par de literatura \"CR3022 × SARS-CoV-2 Spike S1/RBD\", via modelo .pkl AbRank. Cada par deve ser avaliado separadamente — congele o valor numérico após a primeira predição manual com o .pkl ativo.",
+    "comments": "Par de literatura: CR3022 × SARS-CoV-2 Spike S1/RBD. Sequências completas H/L/Ag conforme PDB/literatura; não consulta projetos 252/253.",
+    "additional_metadata": {
+      "category": "ml",
+      "requires_index": false,
+      "requires_olap": false,
+      "requires_ml_model": true,
+      "tags": [
+        "ml",
+        "abrank",
+        "literature",
+        "cr3022-sars2-rbd"
+      ],
+      "golden_id": "ml-literature-cr3022-sars2-rbd-10",
+      "expected_routes": {
+        "documents": false,
+        "spreadsheets": false,
+        "ml_prediction": true
+      }
+    }
+  },
+  {
+    "input": "No ensaio de otimização de tempo Dengue, qual lote do TMB/substrato foi usado e qual a absorbância 16 h da amostra 12 no compilado?",
+    "expected_output": "TMB/Substrato LifeScience/965014, lote LT099185 (protocolo). Segundo results/Compilado_resultado_otimizacao.xlsx: amostra 12 (Positivo) — ABS Tempo sensibilização 16h = 2,344.",
+    "context": [
+      "Item 5 — TMB/Substrato — LifeScience/965014 — Lote: LT099185 — Validade: 30/09/2027"
+    ],
+    "comments": "RAG: 20260209ensaiootimizacaotempo.docx + OLAP: Compilado ID 12.",
+    "additional_metadata": {
+      "category": "combined",
+      "requires_index": true,
+      "requires_olap": true,
+      "requires_ml_model": false,
+      "tags": [
+        "combined",
+        "dengue",
+        "tmb",
+        "abs"
+      ],
+      "golden_id": "comb-dengue-tmb-lote-abs12",
+      "expected_routes": {
+        "documents": true,
+        "spreadsheets": true,
+        "ml_prediction": false
+      },
+      "project_ids": [
+        "253 - ELISA indireto Dengue"
+      ]
+    }
+  },
+  {
+    "input": "Qual lote de placas 96 poços foi usado na sensibilização Dengue e quantas amostras positivas há no compilado de otimização?",
+    "expected_output": "Placas 96 poços Scientifics/9668620, lote PLRT6501M (protocolo). Segundo results/Compilado_resultado_otimizacao.xlsx: 89 amostras Positivo.",
+    "context": [
+      "Item 3 — Placas 96 poços — Scientifics/9668620 — Lote: PLRT6501M — Validade: 02/2029"
+    ],
+    "comments": "Sensibilização placa + contagem Positivo no compilado.",
+    "additional_metadata": {
+      "category": "combined",
+      "requires_index": true,
+      "requires_olap": true,
+      "requires_ml_model": false,
+      "tags": [
+        "combined",
+        "dengue",
+        "placa"
+      ],
+      "golden_id": "comb-dengue-placa-lote-pos-count",
+      "expected_routes": {
+        "documents": true,
+        "spreadsheets": true,
+        "ml_prediction": false
+      },
+      "project_ids": [
+        "253 - ELISA indireto Dengue"
+      ]
+    }
+  },
+  {
+    "input": "A amostra 36 foi classificada como positiva no protocolo de otimização de tempo? Qual sua absorbância com sensibilização 4 h no compilado?",
+    "expected_output": "Sim — amostra 36 é Positivo no ELISA comercial (protocolo). Segundo results/Compilado_resultado_otimizacao.xlsx: ABS Tempo sensibilização 4h = 2,631.",
+    "context": [
+      "Item 3 — ID amostra: 36 — Caracterização ELISA comercial: Positivo"
+    ],
+    "additional_metadata": {
+      "category": "combined",
+      "requires_index": true,
+      "requires_olap": true,
+      "requires_ml_model": false,
+      "tags": [
+        "combined",
+        "dengue",
+        "amostra-36"
+      ],
+      "golden_id": "comb-dengue-amostra36-doc-abs",
+      "expected_routes": {
+        "documents": true,
+        "spreadsheets": true,
+        "ml_prediction": false
+      },
+      "project_ids": [
+        "253 - ELISA indireto Dengue"
+      ]
+    }
+  },
+  {
+    "input": "Quais temperaturas de incubação foram testadas no ensaio de 10/02/2026 e qual a ABS da amostra 41 a 37°C no compilado?",
+    "expected_output": "Protocolo avalia temperatura ambiente e 37 °C. Segundo results/Compilado_resultado_otimizacao.xlsx: amostra 41 (Positivo) — ABS Temperatura amostra 37°C = 3,214.",
+    "context": [
+      "Observação: serão avaliadas temperatura ambiente e 37°C."
+    ],
+    "comments": "20260210ensaiootimizacaotemperatura.docx + compilado ID 41.",
+    "additional_metadata": {
+      "category": "combined",
+      "requires_index": true,
+      "requires_olap": true,
+      "requires_ml_model": false,
+      "tags": [
+        "combined",
+        "dengue",
+        "temperatura"
+      ],
+      "golden_id": "comb-dengue-temperatura-doc-abs41",
+      "expected_routes": {
+        "documents": true,
+        "spreadsheets": true,
+        "ml_prediction": false
+      },
+      "project_ids": [
+        "253 - ELISA indireto Dengue"
+      ]
+    }
+  },
+  {
+    "input": "Quantos ml de antígeno concentrado são necessários para 40 ml a 100 ng/ml na sensibilização e qual a idade da amostra ID 1 na planilha amostras_dengue?",
+    "expected_output": "Protocolo: V1 = 4,08 ml de antígeno + 35,92 ml de tampão bicarbonato (980 ng/ml → 100 ng/ml, 40 ml). Segundo results/amostras_dengue.xlsx: amostra 1 (Yasmin Ribeiro), idade 56 anos.",
+    "context": [
+      "980 x V1 = 100 x 40 — V1 = 4,08 ml e 35,92 ml de tampão."
+    ],
+    "additional_metadata": {
+      "category": "combined",
+      "requires_index": true,
+      "requires_olap": true,
+      "requires_ml_model": false,
+      "tags": [
+        "combined",
+        "dengue",
+        "calculo",
+        "idade"
+      ],
+      "golden_id": "comb-dengue-diluicao-antigeno-volume",
+      "expected_routes": {
+        "documents": true,
+        "spreadsheets": true,
+        "ml_prediction": false
+      },
+      "project_ids": [
+        "253 - ELISA indireto Dengue"
+      ]
+    }
+  },
+  {
+    "input": "Qual lote do tampão bicarbonato usado na sensibilização de placas Dengue e quantas amostras negativas constam no compilado de otimização?",
+    "expected_output": "Tampão Bicarbonato lote PR02022602 (protocolo de sensibilização). Segundo results/Compilado_resultado_otimizacao.xlsx: 231 amostras Negativo.",
+    "context": [
+      "Item 2 — Tampão Bicarbonato — Lote/ativo: PR02022602"
+    ],
+    "comments": "Sensibilização placa + contagem Negativo no compilado.",
+    "additional_metadata": {
+      "category": "combined",
+      "requires_index": true,
+      "requires_olap": true,
+      "requires_ml_model": false,
+      "tags": [
+        "combined",
+        "dengue",
+        "insumo"
+      ],
+      "golden_id": "comb-dengue-bicarbonato-neg-count",
+      "expected_routes": {
+        "documents": true,
+        "spreadsheets": true,
+        "ml_prediction": false
+      },
+      "project_ids": [
+        "253 - ELISA indireto Dengue"
+      ]
+    }
+  },
+  {
+    "input": "No ensaio de otimização de tempo de sensibilização Dengue, quais amostras foram caracterizadas como positivas no planejamento e quais são as respectivas ABS Tempo sensibilização 1, 2, 4 e 16 h no Compilado_resultado_otimizacao.xlsx?",
+    "expected_output": "Segundo o protocolo de otimização de tempo (20260209ensaiootimizacaotempo.docx): amostras positivas 12, 33 e 36. Segundo results/Compilado_resultado_otimizacao.xlsx (colunas ABS Tempo sensibilização 1h, 2h, 4h e 16h): amostra 12 → 1h: 2,091; 2h: 2,344; 4h: 2,587; 16h: 2,344 — amostra 33 → 1h: 2,178; 2h: 2,431; 4h: 2,687; 16h: 2,431 — amostra 36 → 1h: 2,714; 2h: 2,980; 4h: 3,214; 16h: 2,980.",
+    "context": [
+      "Item 1 — ID amostra: 12 — Caracterização ELISA comercial: Positivo",
+      "Item 2 — ID amostra: 33 — Caracterização ELISA comercial: Positivo",
+      "Item 3 — ID amostra: 36 — Caracterização ELISA comercial: Positivo"
+    ],
+    "comments": "Cruza tabela Amostras avaliadas do protocolo de tempo com ABS 1h/2h/4h/16h no compilado para as três positivas (12, 33, 36).",
+    "additional_metadata": {
+      "category": "combined",
+      "requires_index": true,
+      "requires_olap": true,
+      "requires_ml_model": false,
+      "tags": [
+        "combined",
+        "dengue",
+        "protocolo",
+        "amostras"
+      ],
+      "golden_id": "comb-dengue-protocolo-tempo-abs-positivas",
+      "expected_routes": {
+        "documents": true,
+        "spreadsheets": true,
+        "ml_prediction": false
+      },
+      "project_ids": [
+        "253 - ELISA indireto Dengue"
+      ]
+    }
+  },
+  {
+    "input": "Qual equipamento de leitura foi usado no ensaio de otimização de tempo Dengue e qual amostra positiva tem maior ABS sensibilização 16 h no compilado?",
+    "expected_output": "Leitora de placa (espectrofotômetro) ativo EQA0253 (protocolo). Segundo results/Compilado_resultado_otimizacao.xlsx (Positivo, coluna ABS Tempo sensibilização 16h): maior valor na amostra 65 — 3,963.",
+    "context": [
+      "Item 10 — Leitora de placa (espectrofotômetro) — Lote/ativo: EQA0253"
+    ],
+    "additional_metadata": {
+      "category": "combined",
+      "requires_index": true,
+      "requires_olap": true,
+      "requires_ml_model": false,
+      "tags": [
+        "combined",
+        "dengue",
+        "equipamento",
+        "max"
+      ],
+      "golden_id": "comb-dengue-leitora-equipamento-abs-max",
+      "expected_routes": {
+        "documents": true,
+        "spreadsheets": true,
+        "ml_prediction": false
+      },
+      "project_ids": [
+        "253 - ELISA indireto Dengue"
+      ]
+    }
+  },
+  {
+    "input": "Como preparar amostra diluída no ensaio Dengue de otimização de tempo e qual a idade do paciente da amostra 12 na planilha amostras_dengue?",
+    "expected_output": "Preparo: diluir 10 µl de soro/plasma em 490 µl de tampão de amostra e homogeneizar (protocolo). Segundo results/amostras_dengue.xlsx: amostra 12 — Daniel Zanetti, 58 anos.",
+    "context": [
+      "Preparo das amostras: Dilua 10 ul de soro ou plasma em 490 ul de tampão de amostra. Homogeneize bem com a própria pipeta."
+    ],
+    "additional_metadata": {
+      "category": "combined",
+      "requires_index": true,
+      "requires_olap": true,
+      "requires_ml_model": false,
+      "tags": [
+        "combined",
+        "dengue",
+        "preparo"
+      ],
+      "golden_id": "comb-dengue-preparo-amostra-idade12",
+      "expected_routes": {
+        "documents": true,
+        "spreadsheets": true,
+        "ml_prediction": false
+      },
+      "project_ids": [
+        "253 - ELISA indireto Dengue"
+      ]
+    }
+  },
+  {
+    "input": "Quantas horas de sensibilização foram planejadas na preparação de placas Dengue e qual a média de ABS para todos os tempos de sensibilização das amostras positivas no compilado?",
+    "expected_output": "Sensibilização planejada: 1, 2, 4 e 16 horas a 4 °C (protocolo). Segundo results/Compilado_resultado_otimizacao.xlsx (Positivo, colunas ABS Tempo sensibilização 1h/2h/4h/16h; 67 amostras com valores preenchidos): média 1h ≈ 2,44 (2,443); 2h ≈ 2,54 (2,535); 4h ≈ 2,61 (2,613); 16h ≈ 2,54 (2,535).",
+    "context": [
+      "Observação: sensibilização da placa com 1, 2, 4 e 16 horas (overnight) em 4°C."
+    ],
+    "comments": "Médias das quatro colunas de tempo no compilado, filtrando Positivo (89 no total; 67 com ABS de sensibilização preenchida).",
+    "additional_metadata": {
+      "category": "combined",
+      "requires_index": true,
+      "requires_olap": true,
+      "requires_ml_model": false,
+      "tags": [
+        "combined",
+        "dengue",
+        "media"
+      ],
+      "golden_id": "comb-dengue-sensibilizacao-media-abs-pos",
+      "expected_routes": {
+        "documents": true,
+        "spreadsheets": true,
+        "ml_prediction": false
+      },
+      "project_ids": [
+        "253 - ELISA indireto Dengue"
+      ]
+    }
+  }
+]
