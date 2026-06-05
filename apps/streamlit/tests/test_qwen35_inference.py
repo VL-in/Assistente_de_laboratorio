@@ -16,6 +16,7 @@ from qwen35_inference import (  # noqa: E402
     PROFILE_OLAP_SQL,
     build_completion_kwargs,
     chat_max_tokens,
+    create_chat_completion,
     effective_chat_limits,
     format_history_snippet,
     is_qwen35_model,
@@ -130,3 +131,104 @@ class CompletionKwargsTests(unittest.TestCase):
             max_tokens=512,
         )
         self.assertNotIn("extra_body", kw)
+
+
+class CreateChatCompletionRetryTests(unittest.TestCase):
+    def test_retries_on_rate_limit(self) -> None:
+        import os
+        from unittest.mock import MagicMock
+
+        from openai import RateLimitError
+
+        os.environ["LLM_MIN_REQUEST_INTERVAL_S"] = "0"
+        os.environ["LLM_RETRY_MAX_ATTEMPTS"] = "3"
+        os.environ["LLM_RETRY_BASE_DELAY_S"] = "0"
+        try:
+            client = MagicMock()
+            ok = MagicMock()
+            client.chat.completions.create.side_effect = [
+                RateLimitError("rate limit", response=MagicMock(status_code=429), body=None),
+                ok,
+            ]
+            result = create_chat_completion(
+                client,
+                messages=[{"role": "user", "content": "oi"}],
+                model="other-model",
+                profile=select_chat_profile(model_id="other-model", use_thinking=False),
+                max_tokens=32,
+            )
+            self.assertIs(result, ok)
+            self.assertEqual(client.chat.completions.create.call_count, 2)
+        finally:
+            for key in (
+                "LLM_MIN_REQUEST_INTERVAL_S",
+                "LLM_RETRY_MAX_ATTEMPTS",
+                "LLM_RETRY_BASE_DELAY_S",
+            ):
+                os.environ.pop(key, None)
+
+    def test_extra_body_fallback_does_not_mask_rate_limit(self) -> None:
+        import os
+        from unittest.mock import MagicMock
+
+        from openai import RateLimitError
+
+        os.environ["LLM_MIN_REQUEST_INTERVAL_S"] = "0"
+        os.environ["LLM_RETRY_MAX_ATTEMPTS"] = "2"
+        os.environ["LLM_RETRY_BASE_DELAY_S"] = "0"
+        try:
+            client = MagicMock()
+            client.chat.completions.create.side_effect = RateLimitError(
+                "rate limit", response=MagicMock(status_code=429), body=None
+            )
+            with self.assertRaises(RateLimitError):
+                create_chat_completion(
+                    client,
+                    messages=[{"role": "user", "content": "oi"}],
+                    model="qwen3.5-9b-mtp",
+                    profile=PROFILE_CHAT_INSTRUCT,
+                    max_tokens=32,
+                )
+            self.assertEqual(client.chat.completions.create.call_count, 2)
+        finally:
+            for key in (
+                "LLM_MIN_REQUEST_INTERVAL_S",
+                "LLM_RETRY_MAX_ATTEMPTS",
+                "LLM_RETRY_BASE_DELAY_S",
+            ):
+                os.environ.pop(key, None)
+
+    def test_retries_langfuse_typeerror_on_malformed_429(self) -> None:
+        import os
+        from unittest.mock import MagicMock
+
+        from qwen35_inference import _is_retryable_llm_error
+
+        os.environ["LLM_MIN_REQUEST_INTERVAL_S"] = "0"
+        os.environ["LLM_RETRY_MAX_ATTEMPTS"] = "3"
+        os.environ["LLM_RETRY_BASE_DELAY_S"] = "0"
+        try:
+            client = MagicMock()
+            ok = MagicMock()
+            client.chat.completions.create.side_effect = [
+                TypeError("object of type 'NoneType' has no len()"),
+                ok,
+            ]
+            self.assertTrue(
+                _is_retryable_llm_error(TypeError("object of type 'NoneType' has no len()"))
+            )
+            result = create_chat_completion(
+                client,
+                messages=[{"role": "user", "content": "oi"}],
+                model="other-model",
+                profile=select_chat_profile(model_id="other-model", use_thinking=False),
+                max_tokens=32,
+            )
+            self.assertIs(result, ok)
+        finally:
+            for key in (
+                "LLM_MIN_REQUEST_INTERVAL_S",
+                "LLM_RETRY_MAX_ATTEMPTS",
+                "LLM_RETRY_BASE_DELAY_S",
+            ):
+                os.environ.pop(key, None)

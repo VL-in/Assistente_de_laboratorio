@@ -22,8 +22,12 @@ from __future__ import annotations
 
 import os
 import re
+import threading
+import time
 from dataclasses import dataclass
 from typing import Any
+
+from openai import APIStatusError, InternalServerError, RateLimitError
 
 # Resposta do chat — limites conservadores para conter custo no OpenRouter
 # (prompt + saída). Predição ML: resposta curta (tabela já veio no system).
@@ -95,6 +99,131 @@ PROFILE_CHAT_ROUTER = GenerationProfile(
 )
 
 DEFAULT_ROUTER_MAX_TOKENS = 128
+
+_llm_request_lock = threading.Lock()
+_last_llm_request_at = 0.0
+
+
+def _env_non_negative_float(name: str, default: float) -> float:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return max(0.0, value)
+
+
+def llm_min_request_interval_s() -> float:
+    """Intervalo mínimo entre chamadas LLM (``LLM_MIN_REQUEST_INTERVAL_S``)."""
+    return _env_non_negative_float("LLM_MIN_REQUEST_INTERVAL_S", 0.0)
+
+
+def llm_retry_max_attempts() -> int:
+    """Tentativas em erros 429/503 (``LLM_RETRY_MAX_ATTEMPTS``)."""
+    return _env_positive_int("LLM_RETRY_MAX_ATTEMPTS", 6, min_val=1, max_val=20)
+
+
+def llm_retry_base_delay_s() -> float:
+    """Backoff base em segundos (``LLM_RETRY_BASE_DELAY_S``)."""
+    return _env_non_negative_float("LLM_RETRY_BASE_DELAY_S", 15.0)
+
+
+def _throttle_llm_request() -> None:
+    """Respeita ``LLM_MIN_REQUEST_INTERVAL_S`` entre requisições (thread-safe)."""
+    interval = llm_min_request_interval_s()
+    if interval <= 0:
+        return
+    global _last_llm_request_at
+    with _llm_request_lock:
+        now = time.monotonic()
+        if _last_llm_request_at > 0:
+            wait = interval - (now - _last_llm_request_at)
+            if wait > 0:
+                time.sleep(wait)
+        _last_llm_request_at = time.monotonic()
+
+
+def _is_retryable_llm_error(exc: BaseException) -> bool:
+    for err in _iter_exception_chain(exc):
+        if isinstance(err, (RateLimitError, InternalServerError)):
+            return True
+        if isinstance(err, APIStatusError):
+            if err.status_code in (429, 502, 503, 504):
+                return True
+        text = str(err).lower()
+        if any(
+            marker in text
+            for marker in (
+                "error code: 429",
+                "error code: 503",
+                "rate limit exceeded",
+                "rate-limited upstream",
+                "free-models-per-min",
+                "free-models-per-day",
+                "no backends available",
+                "capacity_error",
+            )
+        ):
+            return True
+        if isinstance(err, TypeError) and "nonetype" in text and "len()" in text:
+            # Bug conhecido: wrapper Langfuse ao parsear resposta 429 malformada.
+            return True
+    return False
+
+
+def _iter_exception_chain(exc: BaseException):
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        yield current
+        current = current.__cause__ or current.__context__
+
+
+def _extract_retry_after_s(exc: BaseException | None) -> float | None:
+    if exc is None:
+        return None
+    for err in _iter_exception_chain(exc):
+        if isinstance(err, APIStatusError):
+            response = getattr(err, "response", None)
+            headers = getattr(response, "headers", None) if response is not None else None
+            if headers:
+                raw = headers.get("retry-after") or headers.get("Retry-After")
+                if raw:
+                    try:
+                        return max(0.0, float(raw))
+                    except ValueError:
+                        pass
+        match = re.search(
+            r"retry_after_seconds(?:_raw)?['\"]?\s*[:=]\s*(\d+(?:\.\d+)?)",
+            str(err),
+            re.IGNORECASE,
+        )
+        if match:
+            return max(0.0, float(match.group(1)))
+    return None
+
+
+def _retry_delay_s(attempt: int, exc: BaseException | None = None) -> float:
+    suggested = _extract_retry_after_s(exc)
+    base = llm_retry_base_delay_s() * (2 ** (attempt - 1))
+    if suggested is not None:
+        return max(suggested, base)
+    return base
+
+
+def _invoke_chat_completion(
+    client: Any, *, messages: list[dict[str, str]], kwargs: dict[str, Any]
+) -> Any:
+    try:
+        return client.chat.completions.create(messages=messages, **kwargs)
+    except Exception as exc:
+        if "extra_body" not in kwargs or _is_retryable_llm_error(exc):
+            raise
+        fallback = {k: v for k, v in kwargs.items() if k != "extra_body"}
+        return client.chat.completions.create(messages=messages, **fallback)
 
 
 def _env_positive_int(
@@ -289,6 +418,15 @@ def build_completion_kwargs(
     return kwargs
 
 
+def _langfuse_generation_names_enabled() -> bool:
+    try:
+        from observability.langfuse_client import langfuse_enabled
+
+        return langfuse_enabled()
+    except ImportError:
+        return False
+
+
 def create_chat_completion(
     client: Any,
     *,
@@ -315,15 +453,25 @@ def create_chat_completion(
         max_tokens=max_tokens,
         stream=stream,
     )
-    if generation_name:
+    if generation_name and _langfuse_generation_names_enabled():
         kwargs["name"] = generation_name
-    try:
-        return client.chat.completions.create(messages=messages, **kwargs)
-    except Exception:
-        if "extra_body" not in kwargs:
-            raise
-        fallback = {k: v for k, v in kwargs.items() if k != "extra_body"}
-        return client.chat.completions.create(messages=messages, **fallback)
+
+    max_attempts = llm_retry_max_attempts()
+    for attempt in range(1, max_attempts + 1):
+        _throttle_llm_request()
+        try:
+            return _invoke_chat_completion(client, messages=messages, kwargs=kwargs)
+        except Exception as exc:
+            if not _is_retryable_llm_error(exc) or attempt >= max_attempts:
+                raise
+            delay = _retry_delay_s(attempt, exc)
+            print(
+                f"Aviso LLM: limite/capacidade (429/503) — "
+                f"tentativa {attempt}/{max_attempts}, aguardando {delay:.0f}s...",
+                flush=True,
+            )
+            time.sleep(delay)
+    raise RuntimeError("create_chat_completion esgotou tentativas de retry")
 
 
 def sanitize_history_message(role: str, content: str, *, model_id: str) -> str:

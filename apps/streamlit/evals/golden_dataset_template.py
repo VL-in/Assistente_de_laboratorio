@@ -222,9 +222,6 @@ def _golden_from_dict(row: dict[str, Any]) -> ChatGolden:
     )
 
 
-# ---------------------------------------------------------------------------
-# Edite aqui: substitua placeholders pelos seus casos reais de laboratório.
-# ---------------------------------------------------------------------------
 
 
 def build_golden_dataset() -> list[ChatGolden]:
@@ -264,34 +261,36 @@ def export_dataset(
 # PRÓXIMOS PASSOS (após pip install -U deepeval)
 # ---------------------------------------------------------------------------
 #
-# 1. Carregar goldens exportados:
+# 1. Exportar goldens (se ainda não fez):
 #
-#        from deepeval.dataset import EvaluationDataset
+#        python apps/streamlit/evals/golden_dataset_template.py
 #
-#        dataset = EvaluationDataset()
-#        dataset.add_goldens_from_json_file(
-#            file_path="apps/streamlit/evals/datasets/assistente_lab_goldens_....json",
-#        )
+# 2. Instalar deps de eval (venv separado — deepeval conflita com crewai):
 #
-# 2. Gerar actual_output end-to-end (black-box — simula a aba Conversa):
+#        python -m venv .venv-evals
+#        .venv-evals\Scripts\activate
+#        pip install -r apps/streamlit/requirements-evals.txt
 #
-#        from deepeval.test_case import LLMTestCase
-#        from agents import run_crew_chat
-#        # ... montar client, rag_backend, flags de disponibilidade ...
+# 3. Rodar no Docker (recomendado — usa volumes /data/txtai, /data/duckdb, /data/ml):
 #
-#        for golden in dataset.goldens:
-#            result = run_crew_chat(user_message=golden.input, ...)
-#            actual = result.greeting_response or "(stream via Synthesizer)"
-#            dataset.add_test_case(LLMTestCase(
-#                input=golden.input,
-#                actual_output=actual,
-#                expected_output=golden.expected_output,
-#                context=golden.context,
-#            ))
+#        docker compose build streamlit
+#        docker compose exec streamlit python evals/run_assistente_eval.py --require-ready --limit 3
 #
-# 3. Rodar métricas end-to-end (ex.: AnswerRelevancy, GEval) com pytest:
+#    Ou: .\scripts\run_evals_docker.ps1 --limit 5
 #
-#        deepeval test run apps/streamlit/evals/test_assistente_e2e.py
+# 4. Rodar avaliacao local (venv evals, sem crewai):
+#
+#        python apps/streamlit/evals/run_assistente_eval.py --limit 5
+#
+# 5. Pre-requisitos de ambiente:
+#    - OPENROUTER_API_KEY — assistente e juiz LLM-as-judge (padrao)
+#    - OPENAI_API_KEY — so se usar --judge-provider openai
+#    - Indice RAG, planilhas OLAP e modelo ML conforme cada golden
+#
+#    Opcional: EVAL_JUDGE_MODEL=openrouter/auto (modelo só para métricas)
+#
+#    Alternativa via CLI DeepEval:
+#        deepeval set-openrouter -m openrouter/auto --save=dotenv
 #
 # Documentação: https://deepeval.com/docs/getting-started
 # ---------------------------------------------------------------------------

@@ -14,5 +14,11 @@ apps/streamlit/.ml_data/
 _msg.txt
 *.pkl
 
+# DeepEval — cache e config local da ferramenta
+.deepeval/
+
+# Resultados de avaliação (gerados a cada execução)
+apps/streamlit/evals/results/
+
 # Skill Langfuse copiado localmente para o Cursor (instale via npx skills add)
 .cursor/skills/

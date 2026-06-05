@@ -12,7 +12,7 @@ RUN useradd --create-home --shell /bin/bash --uid 10001 appuser
 
 WORKDIR /app
 
-COPY apps/streamlit/requirements.txt /app/requirements.txt
+COPY apps/streamlit/requirements-base.txt apps/streamlit/requirements.txt /app/
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu \
     && pip install --no-cache-dir -r /app/requirements.txt \
@@ -27,6 +27,13 @@ RUN mkdir -p /data/ml/huggingface \
     && python -c "from transformers import AutoModel, AutoTokenizer; m='facebook/esm2_t6_8M_UR50D'; AutoTokenizer.from_pretrained(m); AutoModel.from_pretrained(m); print('esm2', m, 'ok')"
 
 COPY apps/streamlit/ /app/
+
+# DeepEval: --no-deps evita upgrade posthog (conflito crewai/chromadb).
+# Demais deps do deepeval instaladas explicitamente (posthog 5.x do chromadb permanece).
+RUN pip install --no-cache-dir "deepeval>=4.0.0,<5.0.0" --no-deps \
+    && pip install --no-cache-dir \
+        nest-asyncio "pyfiglet" sentry-sdk "tabulate>=0.9.0,<0.10.0" wheel \
+        pytest-xdist pytest-repeat pytest-rerunfailures pytest-asyncio
 
 # Pastas persistentes (volumes nomeados ou bind no compose)
 RUN mkdir -p /data/projetos /data/txtai /data/duckdb /data/ml /data/sqlite \

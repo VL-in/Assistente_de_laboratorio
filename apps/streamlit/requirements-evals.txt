@@ -1,0 +1,28 @@
+# Avaliação end-to-end com DeepEval (CLI: run_assistente_eval.py).
+
+#
+
+# Conflito conhecido: deepeval exige posthog>=7 (Python 3.10+), enquanto
+
+# crewai/chromadb exige posthog<6. Não instale crewai no mesmo venv das evals.
+
+#
+
+# Instalação recomendada (venv dedicado, sem crewai):
+
+#   python -m venv .venv-evals
+
+#   .venv-evals\Scripts\activate          # Windows
+
+#   pip install -r apps/streamlit/requirements-evals.txt
+
+#
+
+# O harness de eval NÃO importa crewai em runtime — só agents/rag/ml/olap.
+
+
+
+-r requirements-base.txt
+
+deepeval>=4.0.0,<5.0.0
+
