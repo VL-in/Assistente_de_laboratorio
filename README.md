@@ -1,6 +1,6 @@
 # Assistente de lab
 
-Aplicação web **MVP offline-first** para apoiar P&D com documentos locais, **RAG** (txtai + embeddings multilíngues), **OLAP** (DuckDB), **ML tradicional** (FLAML + Kaggle AbRank) e geração via **OpenRouter** (API compatível com OpenAI). A UI e o pipeline Python rodam **no Docker**; dados sensíveis ficam na sua máquina e o LLM é consultado por API remota — o que tira a carga de hardware do PC local.
+Aplicação web **MVP offline-first** para apoiar P&D com documentos locais, **RAG** (txtai + embeddings multilíngues + rerank), **OLAP** (DuckDB), **ML tradicional** (FLAML + Kaggle AbRank), geração via **OpenRouter** (API compatível com OpenAI) e **avaliação end-to-end** com DeepEval. A UI e o pipeline Python rodam **no Docker**; dados sensíveis ficam na sua máquina e o LLM é consultado por API remota — o que tira a carga de hardware do PC local.
 
 | Documento | Função |
 |-----------|--------|
@@ -13,22 +13,36 @@ Aplicação web **MVP offline-first** para apoiar P&D com documentos locais, **R
 
 ```
 Assistente_de_lab/
-├── docker-compose.yml          # Orquestração: Streamlit + volumes
-├── docker/streamlit/Dockerfile # Imagem da app (usuário não-root, HEALTHCHECK HTTP)
+├── docker-compose.yml          # Orquestração: Streamlit + serviço TEI embeddings
+├── docker/
+│   ├── streamlit/Dockerfile    # Imagem da app (usuário não-root, HEALTHCHECK HTTP)
+│   └── embeddings/Dockerfile   # Serviço TEI (multilingual-e5-small)
 ├── .env.docker.example         # Modelo de `.env` (segredos ficam só no `.env`)
-├── apps/streamlit/
-│   ├── app.py                  # UI: Conversa, Documentos, ML tradicional, Desenvolvimento
-│   ├── projects_loader.py      # Inventário: um subdiretório de 1º nível = projeto
-│   ├── llm_config.py           # Defaults do LLM (OpenRouter) + resolver de chave
-│   ├── observability/          # Langfuse: traces e sessões do chat
-│   ├── qwen35_inference.py     # Perfis de sampling (Qwen3.5 ↔ outros) + strip de thinking
-│   ├── agents/                 # Chat multiagente (Triage → Tools → Synthesizer)
-│   │   └── AGENTS.md           # Arquitetura do crew (documentação técnica)
-│   ├── olap/                   # DuckDB: ingestão, NL→SQL, catálogo
-│   ├── ml/                     # ML tradicional: FLAML, chat_infer, .pkl
-│   ├── rag/                    # Extração, chunking, índice txtai (upsert em lotes)
-│   ├── tests/                  # ~155 testes unitários
-│   └── requirements.txt
+├── scripts/
+│   └── run_evals_docker.ps1    # Script PowerShell para rodar evals no Docker
+└── apps/streamlit/
+    ├── app.py                  # UI: Conversa, Documentos, ML tradicional, Desenvolvimento
+    ├── projects_loader.py      # Inventário: um subdiretório de 1º nível = projeto
+    ├── llm_config.py           # Defaults do LLM (OpenRouter) + resolver de chave + retry
+    ├── qwen35_inference.py     # Perfis de sampling (Qwen3.5 ↔ outros) + retry de choices vazio
+    ├── observability/          # Langfuse: traces e sessões do chat
+    ├── agents/                 # Chat multiagente (Triage → Tools → Synthesizer)
+    │   └── AGENTS.md           # Arquitetura do crew (documentação técnica)
+    ├── olap/                   # DuckDB: ingestão, NL→SQL, catálogo
+    ├── ml/                     # ML tradicional: FLAML, chat_infer, .pkl
+    ├── rag/                    # Extração, chunking, índice txtai (busca híbrida + rerank)
+    ├── evals/                  # Avaliação DeepEval end-to-end
+    │   ├── run_assistente_eval.py      # CLI principal: executa os 40 goldens
+    │   ├── harness.py                  # Runtime: EvalRuntime, TurnResult
+    │   ├── golden_dataset_template.py  # Template curador (ChatGolden, categorias)
+    │   ├── goldens_projetos_252_253.py # 40 goldens reais (Chikungunya + Dengue)
+    │   ├── judge_model.py              # LLM-as-judge (OpenRouter / OpenAI)
+    │   ├── eval_bootstrap.py           # Config throttle/retry para OpenRouter free
+    │   ├── datasets/                   # JSON/JSONL exportados dos goldens
+    │   └── results/                    # Saídas: test_cases_*.json + métricas
+    ├── tests/                  # ~155 testes unitários
+    ├── requirements.txt        # App (inclui requirements-base.txt)
+    └── requirements-evals.txt  # Evals (sem CrewAI — conflito posthog)
 ```
 
 **Convenção de projeto:** na pasta configurada como raiz (ex.: `Projetos`), cada **subdiretório imediato** é um **projeto** (`project_id` = nome da pasta). Pastas como `planning/` ou `results/` pertencem ao mesmo projeto.
@@ -130,6 +144,15 @@ O serviço usa `restart: unless-stopped` e `PYTHONUNBUFFERED=1` para logs mais i
 | `OPENROUTER_API_KEY` | Contêiner | Chave de API real do OpenRouter. |
 | `OPENROUTER_APP_TITLE` | Contêiner | Título exibido nos rankings (opcional). |
 | `OPENROUTER_HTTP_REFERER` | Contêiner | URL exibida nos rankings (opcional). |
+| `LLM_MIN_REQUEST_INTERVAL_S` | Contêiner | Pausa mínima entre chamadas ao LLM (padrão `0`; evals free tier: `12`). |
+| `LLM_RETRY_MAX_ATTEMPTS` | Contêiner | Tentativas em erros 429/503 e respostas vazias (padrão `6`; evals: `10`). |
+| `LLM_RETRY_BASE_DELAY_S` | Contêiner | Base do backoff exponencial em segundos (padrão `15`; evals: `25`). |
+| `RAG_HYBRID_ENABLED` | Contêiner | Ativa busca híbrida BM25 + semântica (padrão `1`). |
+| `RAG_HYBRID_WEIGHT` | Contêiner | Peso α do índice semântico na fusão (padrão `0.4`). |
+| `RAG_RERANK_ENABLED` | Contêiner | Ativa reranker cross-encoder após recuperação (padrão `1`). |
+| `RAG_RERANK_MODEL_ID` | Contêiner | Modelo cross-encoder (padrão `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1`). |
+| `CREW_TRACE_HANDOFF` | Contêiner | Mostra trilha de agentes no expander (padrão `1`). |
+| `CREW_PARALLEL_TOOLS` | Contêiner | Executa RAG/OLAP/ML em paralelo (padrão `1`). |
 | `LANGFUSE_PUBLIC_KEY` | Contêiner | Chave pública do projeto Langfuse (observabilidade LLM). |
 | `LANGFUSE_SECRET_KEY` | Contêiner | Chave secreta do projeto Langfuse. |
 | `LANGFUSE_BASE_URL` | Contêiner | API Langfuse (padrão `https://cloud.langfuse.com`; EUA: `https://us.cloud.langfuse.com`). |
@@ -232,7 +255,7 @@ Variáveis opcionais no `.env`:
 | `/data/txtai` | Volume nomeado: índice vetorial RAG (persiste entre reinícios) |
 | `/data` (contêiner `embeddings`) | Volume nomeado: cache do modelo TEI (`intfloat/multilingual-e5-small`) |
 | `/data/duckdb` | Volume nomeado: OLAP |
-| `/data/ml` | Volume nomeado: modelos ML (`.pkl`) |
+| `/data/ml` | Volume nomeado: modelos ML (`.pkl`) e cache HuggingFace (ESM-2) |
 | `/data/sqlite` | Volume nomeado: metadados (fases futuras) |
 
 ### Saúde do contêiner (HEALTHCHECK)
@@ -265,7 +288,7 @@ Mensagem → Greeter (rule-based) → Triage → Tools (RAG, OLAP, ML em paralel
 |---------------|-------|--------------|
 | **Greeter** | Curto-circuita saudações ("oi", "obrigado") | 0 |
 | **Triage** | Classifica intenção e decide rotas (JSON) | 1 |
-| **RAG Tool** | Busca híbrida no índice txtai (BM25 + E5) | 0 (só embedding) |
+| **RAG Tool** | Busca híbrida no índice txtai (BM25 + E5 + rerank) | 0 (só embedding) |
 | **OLAP Tool** | NL → SQL read-only no DuckDB | 1 (gera SQL) |
 | **ML Tool** | Extrai features e roda predição AbRank | 1 (extrai features) |
 | **Synthesizer** | Resposta final cordial + citações | 1 (com streaming) |
@@ -311,14 +334,186 @@ Pasta de projetos → inventário (scan) → extração de texto → chunking �
 | Chunking | Indexação RAG | `rag/chunking.py` — padrão **520** caracteres (~100–130 tokens), sobreposição **120**, lote 64 |
 | Índice | Indexação RAG | `rag/index_txtai.py` + TEI — modelo [`intfloat/multilingual-e5-small`](https://huggingface.co/intfloat/multilingual-e5-small) (até 512 tokens) + **BM25** (busca híbrida) |
 | Busca | Teste RAG / Chat | Híbrida: semântica (E5) + lexical (BM25); trechos citam projeto e arquivo |
+| Rerank | Teste RAG / Chat | Cross-encoder `mmarco-mMiniLMv2-L12-H384-v1` reordena os top-K candidatos |
 
 **Busca híbrida:** por padrão o txtai mantém dois índices em paralelo — vetorial (significado) e BM25 (termos exatos). Isso ajuda a recuperar nomes compostos de laboratório (ex.: *tampão de amostra*) que a busca só semântica costuma diluir em palavras isoladas. Peso denso α padrão: `0.4` (`RAG_HYBRID_WEIGHT`). Desligue com `RAG_HYBRID_ENABLED=0`.
+
+**Reranker:** após a recuperação híbrida, o cross-encoder multilíngue reclassifica os chunks pelo score de relevância par-a-par (pergunta ↔ trecho). Desative com `RAG_RERANK_ENABLED=0` ou troque o modelo via `RAG_RERANK_MODEL_ID`.
 
 **Primeira indexação / migração:** na aba **Indexação RAG**, use **Substituir índice existente** (recomendado). Índices criados antes da busca híbrida **não** têm BM25 — é obrigatório reconstruir uma vez. Na primeira subida do Compose, o contêiner `embeddings` baixa o modelo TEI (~470 MB); aguarde o healthcheck ficar saudável antes de indexar.
 
 **Reindexação incremental:** desmarque *Substituir índice existente* para processar só arquivos **novos, alterados ou removidos** (comparação por SHA-256 e manifesto em `/data/txtai/index_manifest.json`). Arquivos inalterados são pulados. Documentos **novos** entram automaticamente nos índices semântico **e** BM25 — não há lista fixa de termos técnicos; qualquer palavra presente no texto indexado pode ser recuperada lexicalmente.
 
 **Chat com RAG/OLAP/ML:** na aba **Conversa**, basta enviar a mensagem — o Triage escolhe as rotas quando o índice, as planilhas ou o modelo `.pkl` estão disponíveis. Em **Desenvolvimento → Parâmetros do chat**, o modo *override* permite forçar ou desligar RAG, OLAP e ML manualmente.
+
+---
+
+## Avaliação end-to-end (DeepEval)
+
+Pipeline de avaliação automatizada do assistente usando **[DeepEval](https://docs.confident-ai.com/)** como framework de métricas. O pipeline roda dentro do contêiner Docker — sem dependência de infra externa além da API do LLM — e avalia as mesmas rotas do chat real (RAG, OLAP, ML, combined).
+
+> **Conflito de dependências:** CrewAI exige `posthog<6`; DeepEval exige `posthog>=7`. Por isso existe um `requirements-evals.txt` separado (sem CrewAI). No Docker, a imagem já inclui os dois conjuntos de dependências e o conflito é contornado na ordem de instalação.
+
+### Dataset de golden: 40 casos reais
+
+O dataset cobre os projetos **252 (Chikungunya ELISA)** e **253 (Dengue ELISA)** com perguntas derivadas dos documentos e planilhas reais do laboratório:
+
+| Categoria | Qtd | O que avalia |
+|-----------|-----|--------------|
+| `rag` | 10 | Perguntas sobre protocolos, validade de antígenos, reagentes (documentos DOCX/PDF) |
+| `olap` | 10 | Consultas analíticas sobre amostras e resultados (planilhas XLSX no DuckDB) |
+| `ml` | 10 | Predição `log_Aff` para pares Ab–Ag de literatura (ESM-2 + modelo `.pkl`) |
+| `combined` | 10 | RAG + OLAP combinados na mesma pergunta |
+
+Arquivo fonte: [`apps/streamlit/evals/goldens_projetos_252_253.py`](apps/streamlit/evals/goldens_projetos_252_253.py)
+
+### Fluxo em 3 fases
+
+```
+Fase 1: Bootstrap   →   Fase 2: Geração de respostas   →   Fase 3: Métricas (LLM-as-judge)
+eval_bootstrap.py        harness.py + run_crew_chat()        judge_model.py + DeepEval
+(throttle, retry)        40 perguntas → JSON intermediário   scores por caso → JSON final
+```
+
+**Fase 1 — Bootstrap (`eval_bootstrap.py`):** desliga Langfuse (`LANGFUSE_ENABLED=0`), configura throttle conservador para o tier gratuito do OpenRouter (`LLM_MIN_REQUEST_INTERVAL_S=12`, `LLM_RETRY_MAX_ATTEMPTS=10`, `LLM_RETRY_BASE_DELAY_S=25`).
+
+**Fase 2 — Geração:** para cada golden, chama o mesmo `run_crew_chat()` do chat real (Greeter → Triage → Tools → Synthesizer). O resultado (`actual_output` + `retrieval_context`) é salvo em `evals/results/eval_test_cases_<stamp>.json`.
+
+**Fase 3 — Métricas:** um juiz LLM (configurável) avalia cada par (pergunta, resposta, contexto) com as métricas do DeepEval. Aplica throttle adicional (`EVAL_METRICS_THROTTLE_S`) entre chamadas para respeitar o rate limit.
+
+### Executar no Docker (recomendado)
+
+**Script PowerShell (forma mais fácil):**
+
+```powershell
+# Roda todos os 40 casos (fases 2 + 3)
+.\scripts\run_evals_docker.ps1
+
+# Limitar casos e filtrar categoria
+.\scripts\run_evals_docker.ps1 --limit 5 --category rag
+```
+
+**Forma manual (mais controle):**
+
+```bash
+# Fase 2 apenas — gera respostas sem LLM-as-judge (menor consumo de API)
+docker compose exec -e LANGFUSE_ENABLED=0 streamlit \
+    python evals/run_assistente_eval.py --require-ready --skip-metrics
+
+# Fase 3 apenas — retoma métricas de um JSON já gerado
+docker compose exec -e LANGFUSE_ENABLED=0 streamlit \
+    python evals/run_assistente_eval.py \
+    --resume-metrics evals/results/eval_test_cases_20260531_120000.json
+```
+
+**Argumentos do CLI:**
+
+| Argumento | Padrão | Descrição |
+|-----------|--------|-----------|
+| `--dataset PATH` | auto-detect | JSON/JSONL com os goldens |
+| `--limit N` | todos | Executar apenas os N primeiros casos |
+| `--category CAT` | todos | Filtrar por `rag`, `olap`, `ml`, `combined`, `out_of_scope` |
+| `--skip-metrics` | — | Pular fase 3 (só gera respostas, salva JSON intermediário) |
+| `--skip-unavailable` | — | Ignorar casos que exigem infra ausente (ex.: modelo `.pkl` não treinado) |
+| `--require-ready` | — | Abortar se RAG/OLAP/ML não estiverem prontos |
+| `--resume-metrics PATH` | — | Retomar fase 3 a partir de JSON de fase 2 anterior |
+| `--judge-provider` | auto | `openrouter` ou `openai` |
+| `--judge-model` | auto | Slug do modelo juiz |
+| `--request-interval S` | env | Sobrescreve `LLM_MIN_REQUEST_INTERVAL_S` na linha de comando |
+
+### Executar fora do Docker (venv separado)
+
+```powershell
+# Criar venv dedicado (sem CrewAI para evitar conflito posthog)
+python -m venv .venv-evals
+.\.venv-evals\Scripts\Activate.ps1
+pip install -r apps/streamlit/requirements-evals.txt
+
+# Configurar variáveis mínimas
+$env:OPENROUTER_API_KEY = "sk-or-v1-..."
+$env:ASSISTENTE_PROJETOS_DIR = "D:\caminho\Projetos"
+$env:LANGFUSE_ENABLED = "0"
+
+# Executar
+cd apps/streamlit
+python evals/run_assistente_eval.py --skip-unavailable --skip-metrics
+```
+
+> Fora do Docker o serviço TEI de embeddings não está disponível — os casos que exigem RAG serão ignorados automaticamente com `--skip-unavailable`.
+
+### Executar via pytest / DeepEval CLI
+
+```bash
+# Smoke test (3 casos, sem métricas)
+set EVAL_LIMIT=3
+set EVAL_SKIP_METRICS=1
+deepeval test run apps/streamlit/evals/test_assistente_e2e.py
+
+# Filtrar por categoria
+set EVAL_CATEGORY=rag
+deepeval test run apps/streamlit/evals/test_assistente_e2e.py
+```
+
+| Variável de ambiente | Padrão | Efeito |
+|----------------------|--------|--------|
+| `EVAL_LIMIT` | `3` | Número de casos no smoke test |
+| `EVAL_CATEGORY` | todos | Filtro de categoria |
+| `EVAL_SKIP_METRICS` | `0` | `1` = pular LLM-as-judge |
+| `EVAL_REQUIRE_READY` | `0` | `1` = abortar se infra incompleta |
+
+### Variáveis de throttle para o tier gratuito
+
+O tier gratuito do OpenRouter tem limite por minuto (~20 req/min). Para evitar o erro `Resposta LLM vazia ou malformada (choices ausente)` durante avaliações longas:
+
+| Variável | Valor recomendado (free tier) | O que faz |
+|----------|-------------------------------|-----------|
+| `LLM_MIN_REQUEST_INTERVAL_S` | `12` | Pausa mínima entre chamadas (throttle) |
+| `LLM_RETRY_MAX_ATTEMPTS` | `10` | Tentativas em 429/503 **e** em respostas com `choices` vazio |
+| `LLM_RETRY_BASE_DELAY_S` | `25` | Base do backoff exponencial (25 s, 50 s, 100 s, …) |
+| `EVAL_METRICS_THROTTLE_S` | `15` | Pausa entre avaliações do juiz (fase 3) |
+
+> O `eval_bootstrap.py` já aplica esses valores automaticamente quando `LANGFUSE_ENABLED=0`. Você só precisa sobrescrever se quiser valores diferentes.
+
+### Estrutura dos resultados
+
+```
+evals/
+├── datasets/
+│   ├── assistente_lab_goldens_<stamp>.json     # Goldens exportados (array)
+│   └── assistente_lab_goldens_<stamp>.jsonl    # Goldens exportados (linhas)
+└── results/
+    ├── eval_test_cases_<stamp>.json            # Saída fase 2: input + actual_output + retrieval_context
+    └── eval_results_<stamp>.json              # Saída fase 3: test_cases + scores por métrica
+```
+
+### Adicionar novos goldens
+
+Edite `apps/streamlit/evals/goldens_projetos_252_253.py` seguindo a estrutura de `ChatGolden`:
+
+```python
+ChatGolden(
+    input="Qual a concentração do anticorpo primário no protocolo ELISA?",
+    expected_output="A concentração recomendada é 1:1000 em PBS-T...",
+    context=["trecho do documento que contém a resposta"],
+    comments="Fonte: protocolo_elisa_v3.docx",
+    additional_metadata={
+        "category": "rag",            # rag | olap | ml | combined | out_of_scope
+        "requires_index": True,
+        "requires_olap": False,
+        "requires_ml_model": False,
+        "tags": ["elisa", "anticorpo", "concentração"],
+        "golden_id": "rag-elisa-concentracao-01",
+        "expected_routes": {"documents": True, "spreadsheets": False, "ml_prediction": False},
+        "project_ids": ["252"],
+    },
+)
+```
+
+Depois exporte o dataset atualizado:
+
+```bash
+docker compose exec streamlit python evals/golden_dataset_template.py
+```
 
 ---
 
@@ -349,7 +544,7 @@ Fora do Docker, se `ASSISTENTE_PROJETOS_DIR` não estiver definida, o loader usa
 
 | Sintoma | Causa provável | O que fazer |
 |---------|----------------|-------------|
-| Pasta vazia ou “Caminho não existe” | `PROJETOS_HOST_DIR` incorreto | Caminho absoluto real no host; um subdiretório por projeto |
+| Pasta vazia ou "Caminho não existe" | `PROJETOS_HOST_DIR` incorreto | Caminho absoluto real no host; um subdiretório por projeto |
 | **HTTP 401 no chat** | `OPENROUTER_API_KEY` ausente ou inválida | Verifique o `.env`, recrie a chave em https://openrouter.ai/settings/keys e rode `docker compose up -d --build` |
 | **HTTP 402 / saldo insuficiente** | Modelo pago sem créditos na conta | Troque para `openrouter/free` no `LLM_MODEL` ou adicione créditos no painel do OpenRouter |
 | **HTTP 429 (rate limit)** | Limite de requisições do plano gratuito atingido | Aguarde alguns minutos; reduza paralelismo (`CREW_PARALLEL_TOOLS=0`) |
@@ -361,6 +556,10 @@ Fora do Docker, se `ASSISTENTE_PROJETOS_DIR` não estiver definida, o loader usa
 | Busca só mostra planilhas grandes | Projeto com muitos chunks de xlsx domina o top‑K | Normal em MVP; refine a pergunta ou use **Teste RAG** com mais trechos |
 | `unhealthy` no Docker | Streamlit não subiu | `docker compose logs streamlit` |
 | Permissão negada em arquivos | Bind somente leitura | Usuário da imagem (`uid 10001`) precisa ler os arquivos no host |
+| **Eval abortada no meio** (`RuntimeError: Resposta LLM vazia`) | OpenRouter free retornou HTTP 200 sem `choices` (rate limit silencioso) | O retry automático (até 10 tentativas) já cobre isso; se persistir, aumente `LLM_MIN_REQUEST_INTERVAL_S` para `15–20` ou use `--request-interval` |
+| Eval muito lenta (> 3 h para 40 casos) | Backoff exponencial muito longo | Reduza `LLM_RETRY_BASE_DELAY_S` para `15` e garanta `LLM_MIN_REQUEST_INTERVAL_S=10` |
+| `posthog` conflict no `pip install` | CrewAI e DeepEval no mesmo venv | Use `requirements-evals.txt` (venv sem CrewAI); no Docker o conflito já está resolvido |
+| Casos `ml` pulados com `--skip-unavailable` | Modelo `.pkl` não treinado ou `ASSISTENTE_ML_CHAT_MODEL` não aponta para arquivo válido | Treine o modelo na aba ML e configure a variável; ou rode apenas `--category rag` |
 
 ---
 
@@ -371,12 +570,16 @@ Fora do Docker, se `ASSISTENTE_PROJETOS_DIR` não estiver definida, o loader usa
 | UI, inventário, abas | `apps/streamlit/app.py` |
 | Chat multiagente | `apps/streamlit/agents/runner.py`, `agents/crew.py` |
 | Roteamento de intenção | `apps/streamlit/agents/triage.py`, `agents/intent_rules.py` |
-| Configuração do LLM (defaults, chave) | `apps/streamlit/llm_config.py` |
+| Configuração do LLM (defaults, chave, retry) | `apps/streamlit/llm_config.py`, `qwen35_inference.py` |
 | Observabilidade Langfuse | `apps/streamlit/observability/langfuse_client.py` |
 | Extração, chunking, índice, busca | `apps/streamlit/rag/` |
 | OLAP / NL→SQL | `apps/streamlit/olap/` |
 | ML tradicional + inferência no chat | `apps/streamlit/ml/` |
 | Scan de projetos | `apps/streamlit/projects_loader.py` |
+| **Avaliação DeepEval (CLI)** | `apps/streamlit/evals/run_assistente_eval.py` |
+| **Runtime de avaliação** | `apps/streamlit/evals/harness.py` |
+| **Dataset de goldens** | `apps/streamlit/evals/goldens_projetos_252_253.py` |
+| **Throttle e retry de evals** | `apps/streamlit/evals/eval_bootstrap.py`, `qwen35_inference.py` |
 | Testes unitários (~155) | `apps/streamlit/tests/` |
 | Imagem e healthcheck | `docker/streamlit/Dockerfile` |
 | Portas, volumes, env | `docker-compose.yml` |

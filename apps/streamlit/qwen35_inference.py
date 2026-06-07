@@ -117,17 +117,17 @@ def _env_non_negative_float(name: str, default: float) -> float:
 
 def llm_min_request_interval_s() -> float:
     """Intervalo mínimo entre chamadas LLM (``LLM_MIN_REQUEST_INTERVAL_S``)."""
-    return _env_non_negative_float("LLM_MIN_REQUEST_INTERVAL_S", 0.0)
+    return _env_non_negative_float("LLM_MIN_REQUEST_INTERVAL_S", 3.0)
 
 
 def llm_retry_max_attempts() -> int:
     """Tentativas em erros 429/503 (``LLM_RETRY_MAX_ATTEMPTS``)."""
-    return _env_positive_int("LLM_RETRY_MAX_ATTEMPTS", 6, min_val=1, max_val=20)
+    return _env_positive_int("LLM_RETRY_MAX_ATTEMPTS", 10, min_val=1, max_val=20)
 
 
 def llm_retry_base_delay_s() -> float:
     """Backoff base em segundos (``LLM_RETRY_BASE_DELAY_S``)."""
-    return _env_non_negative_float("LLM_RETRY_BASE_DELAY_S", 15.0)
+    return _env_non_negative_float("LLM_RETRY_BASE_DELAY_S", 20.0)
 
 
 def _throttle_llm_request() -> None:
@@ -460,7 +460,7 @@ def create_chat_completion(
     for attempt in range(1, max_attempts + 1):
         _throttle_llm_request()
         try:
-            return _invoke_chat_completion(client, messages=messages, kwargs=kwargs)
+            completion = _invoke_chat_completion(client, messages=messages, kwargs=kwargs)
         except Exception as exc:
             if not _is_retryable_llm_error(exc) or attempt >= max_attempts:
                 raise
@@ -471,7 +471,26 @@ def create_chat_completion(
                 flush=True,
             )
             time.sleep(delay)
-    raise RuntimeError("create_chat_completion esgotou tentativas de retry")
+            continue
+        # OpenRouter free tier às vezes devolve HTTP 200 com choices vazio em vez
+        # de 429 — trata como erro transitório e reutiliza o mesmo backoff.
+        if not stream and not getattr(completion, "choices", None):
+            if attempt >= max_attempts:
+                break
+            delay = _retry_delay_s(attempt)
+            print(
+                f"Aviso LLM: resposta vazia (choices ausente) — "
+                f"tentativa {attempt}/{max_attempts}, aguardando {delay:.0f}s...",
+                flush=True,
+            )
+            time.sleep(delay)
+            continue
+        return completion
+    raise RuntimeError(
+        "Resposta LLM vazia ou malformada (choices ausente) após "
+        f"{max_attempts} tentativas. "
+        "Aumente LLM_MIN_REQUEST_INTERVAL_S ou LLM_RETRY_BASE_DELAY_S."
+    )
 
 
 def sanitize_history_message(role: str, content: str, *, model_id: str) -> str:
