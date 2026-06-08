@@ -228,7 +228,7 @@ def build_golden_dataset() -> list[ChatGolden]:
     """
     Retorna a lista de goldens do projeto.
 
-    Por padrão carrega os 40 casos curados dos projetos 252/253
+    Por padrão carrega os 18 casos curados dos projetos 252/253
     (``goldens_projetos_252_253.build_projetos_goldens``).
     """
     from goldens_projetos_252_253 import build_projetos_goldens

@@ -26,3 +26,6 @@
 
 deepeval>=4.0.0,<5.0.0
 
+# Juiz LLM-as-judge via Anthropic SDK (habilita AnthropicJudgeModel quando ANTHROPIC_API_KEY estiver definida).
+anthropic>=0.40.0
+

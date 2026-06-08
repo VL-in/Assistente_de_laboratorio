@@ -27,7 +27,7 @@ Via Docker (RAG/OLAP/ML nos volumes — recomendado)::
     docker compose build streamlit
     docker compose up -d streamlit
 
-    # Fase 1: só respostas (recomendado no tier free — ~80+ chamadas LLM nos 40 casos)
+    # Fase 1: só respostas (recomendado no tier free — ~18 chamadas LLM nos 18 casos)
     docker compose exec -e LANGFUSE_ENABLED=0 streamlit \\
         python evals/run_assistente_eval.py --require-ready --skip-metrics
 
@@ -44,7 +44,7 @@ Via pytest / DeepEval CLI::
 Pré-requisitos
 --------------
 - ``OPENROUTER_API_KEY`` (ou ``LLM_*``) para o assistente responder.
-- Juiz LLM-as-judge: ``OPENROUTER_API_KEY`` (padrão) ou ``OPENAI_API_KEY``.
+- Juiz LLM-as-judge: ``ANTHROPIC_API_KEY`` (preferido) ou ``OPENROUTER_API_KEY`` / ``OPENAI_API_KEY``.
 - Índice RAG, planilhas OLAP e modelo ML conforme os casos do dataset.
 """
 
@@ -173,7 +173,7 @@ def _has_retrieval_context(test_case) -> bool:
 
 def _load_test_cases_from_results(path: Path) -> list:
     """Carrega test cases de um JSON gerado por execução anterior (--skip-metrics)."""
-    from deepeval.test_case import LLMTestCase
+    from deepeval.test_case import LLMTestCase, ToolCall
 
     if not path.is_file():
         raise FileNotFoundError(f"Arquivo de test cases nao encontrado: {path}")
@@ -186,6 +186,23 @@ def _load_test_cases_from_results(path: Path) -> list:
         if not isinstance(row, dict):
             raise ValueError(f"Entrada {i} invalida em {path}")
         filtered = {k: v for k, v in row.items() if k in allowed}
+        # tools_called é serializado como list[dict] — precisa reconstruir ToolCall
+        raw_tools = filtered.get("tools_called")
+        if isinstance(raw_tools, list):
+            rebuilt: list[ToolCall] = []
+            for t in raw_tools:
+                if isinstance(t, dict):
+                    rebuilt.append(ToolCall(
+                        name=t.get("name", ""),
+                        description=t.get("description"),
+                        reasoning=t.get("reasoning"),
+                        output=t.get("output"),
+                        expected_parameters=t.get("expected_parameters"),
+                        actual_parameters=t.get("actual_parameters"),
+                    ))
+                elif isinstance(t, ToolCall):
+                    rebuilt.append(t)
+            filtered["tools_called"] = rebuilt or None
         cases.append(LLMTestCase(**filtered))
     return cases
 
@@ -313,6 +330,7 @@ def run_evaluation(
     else:
         from harness import (
             build_eval_runtime,
+            extract_tools_called,
             filter_goldens,
             filter_runnable_goldens,
             golden_project_ids,
@@ -399,6 +417,7 @@ def run_evaluation(
                 expected_output=getattr(golden, "expected_output", None),
                 context=getattr(golden, "context", None),
                 retrieval_context=resolve_retrieval_context(turn, golden),
+                tools_called=extract_tools_called(turn.crew_result) or None,
             )
             test_cases.append(test_case)
             preview = turn.actual_output.replace("\n", " ")[:120]
@@ -409,8 +428,25 @@ def run_evaluation(
         output_dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         cases_path = output_dir / f"eval_test_cases_{stamp}.json"
+        def _json_default(obj: object) -> object:
+            # DataFrame e outros tipos não-serializáveis → representação segura
+            try:
+                import pandas as pd  # noqa: PLC0415
+                if isinstance(obj, pd.DataFrame):
+                    return obj.to_dict(orient="records")
+                if isinstance(obj, pd.Series):
+                    return obj.tolist()
+            except ImportError:
+                pass
+            return str(obj)
+
         cases_path.write_text(
-            json.dumps([tc.model_dump() for tc in test_cases], ensure_ascii=False, indent=2),
+            json.dumps(
+                [tc.model_dump() for tc in test_cases],
+                ensure_ascii=False,
+                indent=2,
+                default=_json_default,
+            ),
             encoding="utf-8",
         )
         print(f"\nTest cases salvos em: {cases_path}")
@@ -479,6 +515,47 @@ def run_evaluation(
 
     passed = sum(1 for tr in result.test_results if tr.success)
     total = len(result.test_results)
+
+    # Salva métricas do juiz em JSON estruturado
+    output_dir.mkdir(parents=True, exist_ok=True)
+    metrics_path = output_dir / f"eval_metrics_{stamp}.json"
+    metrics_payload: list[dict] = []
+    for tr in result.test_results:
+        case_entry: dict = {
+            "name": tr.name,
+            "success": tr.success,
+            "input": getattr(tr, "input", None),
+            "actual_output": getattr(tr, "actual_output", None),
+            "expected_output": getattr(tr, "expected_output", None),
+            "metrics_data": [],
+        }
+        for md in (tr.metrics_data or []):
+            case_entry["metrics_data"].append({
+                "metric": md.name,
+                "score": md.score,
+                "threshold": md.threshold,
+                "success": md.success,
+                "reason": md.reason,
+            })
+        metrics_payload.append(case_entry)
+
+    metrics_path.write_text(
+        json.dumps(
+            {
+                "stamp": stamp,
+                "judge_model": resolve_judge_model_name(judge_model),
+                "passed": passed,
+                "total": total,
+                "pass_rate": round(passed / total, 4) if total else 0,
+                "test_results": metrics_payload,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    print(f"Metricas salvas em: {metrics_path}")
+
     print(f"\nResumo: {passed}/{total} test case(s) passaram.")
     if result.confident_link:
         print(f"Confident AI: {result.confident_link}")
@@ -524,9 +601,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--judge-provider",
-        choices=["auto", "openrouter", "openai"],
+        choices=["auto", "anthropic", "openrouter", "openai"],
         default="auto",
-        help="Backend do juiz: auto detecta OPENROUTER_API_KEY (padrao).",
+        help=(
+            "Backend do juiz: auto detecta ANTHROPIC_API_KEY primeiro, "
+            "depois OPENROUTER_API_KEY (padrao)."
+        ),
     )
     parser.add_argument(
         "--skip-unavailable",

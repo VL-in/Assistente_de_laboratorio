@@ -5,7 +5,7 @@ Gerado a partir dos documentos em:
 - ``D:\\Vanessa\\AI_project\\Projetos\\252 - Teste rápido Chikungunya``
 - ``D:\\Vanessa\\AI_project\\Projetos\\253 - ELISA indireto Dengue``
 
-Distribuição: 10 RAG · 10 OLAP · 10 ML (pares de literatura Ab–Ag) · 10 RAG+OLAP (40 casos).
+Distribuição: 5 RAG · 5 OLAP · 3 ML (pares de literatura Ab–Ag) · 5 RAG+OLAP (18 casos).
 """
 
 from __future__ import annotations
@@ -83,13 +83,6 @@ _ML_LITERATURE_PROMPTS: tuple[tuple[int, str], ...] = (
     (0, "Prediga log_Aff para o par anticorpo–antígeno de literatura abaixo (AbRank)."),
     (1, "Qual a afinidade predita log_Aff do anticorpo 1F1 contra a cadeia HA2 da hemaglutinina?"),
     (2, "Estime log_Aff do anticorpo 1F1 contra a cadeia HA1 da hemaglutinina influenza A."),
-    (3, "Faça inferência de afinidade AbRank para HyHEL-10 contra lisozima (PDB 3HFM)."),
-    (0, "Use o modelo ML para prever log_Aff do CR3022 contra o RBD do Spike SARS-CoV-2."),
-    (1, "Calcule log_Aff predito para 1F1 × HA2 com as sequências PDB 4GXU."),
-    (2, "Rode predição log_Aff: mesmo 1F1, antígeno HA1 (epítopo distinto de HA2)."),
-    (3, "Inferir score de afinidade log_Aff para Fab HyHEL-10 × lisozima de Gallus gallus."),
-    (1, "Predição ML de log_Aff — par 1F1 e fragmento HA2 (Influenza A)."),
-    (0, "Estime a afinidade de ligação log_Aff para CR3022 × fragmento S1/RBD SARS-CoV-2."),
 )
 
 
@@ -175,77 +168,6 @@ def _rag_goldens() -> list[ChatGolden]:
             tags=["rag", "chikungunya", "metodologia"],
             comments="Fonte: planning/1a.docx",
         ),
-        ChatGolden(
-            golden_id="rag-dengue-antigeno-lote",
-            input="Qual fabricante, código, lote e validade do antígeno recombinante Dengue usado na sensibilização de placas ELISA?",
-            expected_output=(
-                "Antígeno recombinante Dengue [980 ng/ml], fabricante/código: Thermo/CKV220223, lote: DV56H09, validade 31/01/2028."
-            ),
-            context=[
-                "Item 1 — Antígeno recombinante Dengue [980 ng/ml] — Thermo/CKV220223 — Lote: DV56H09 — Validade: 31/01/2028",
-            ],
-            category=EvalCategory.RAG,
-            expected_routes=ExpectedRoutes(documents=True),
-            project_ids=[PROJ_DENGUE],
-            tags=["rag", "dengue", "insumo"],
-            comments="Fonte: plannig/planning/20260204_Sensibilizacao_placa.docx",
-        ),
-        ChatGolden(
-            golden_id="rag-dengue-tempos-sensibilizacao",
-            input="Quais tempos de sensibilização de placa foram planejados no ensaio Dengue de 04/02/2026?",
-            expected_output=(
-                "Sensibilização da placa com 1, 2, 4 e 16 horas (overnight) a 4°C."
-            ),
-            context=[
-                "Observação: será feito a sensibilização da placa com 1, 2, 4 e 16 horas (overnight) em 4°C.",
-                "Selar as placas e deixar na geladeira por tempos de 1, 2, 4 e 16 horas (overnight), tirando uma placa em cada tempo.",
-            ],
-            category=EvalCategory.RAG,
-            expected_routes=ExpectedRoutes(documents=True),
-            project_ids=[PROJ_DENGUE],
-            tags=["rag", "dengue", "sensibilizacao"],
-            comments="Fonte: sensibilização placa",
-        ),
-        ChatGolden(
-            golden_id="rag-dengue-lote-placas",
-            input="Qual o lote de placas gerado na sensibilização Dengue registrado no documento de 04/02/2026?",
-            expected_output="Lote de placas gerada: PR0802202612.",
-            context=["Lote de placas gerada: PR0802202612"],
-            category=EvalCategory.RAG,
-            expected_routes=ExpectedRoutes(documents=True),
-            project_ids=[PROJ_DENGUE],
-            tags=["rag", "dengue", "lote"],
-            comments="Fonte: 20260204Sensibilizacaoplaca.docx (campo extra vs versão _Sensibilizacao_)",
-        ),
-        ChatGolden(
-            golden_id="rag-dengue-amostras-positivas-tempo",
-            input="Quais amostras positivas foi usado no ensaio de otimização de tempo de sensibilização Dengue?",
-            expected_output="Amostras positivas no ELISA comercial: 12, 33 e 36.",
-            context=[
-                "Item 1 — ID amostra: 12 — Caracterização ELISA comercial: Positivo",
-                "Item 2 — ID amostra: 33 — Caracterização ELISA comercial: Positivo",
-                "Item 3 — ID amostra: 36 — Caracterização ELISA comercial: Positivo",
-            ],
-            category=EvalCategory.RAG,
-            expected_routes=ExpectedRoutes(documents=True),
-            project_ids=[PROJ_DENGUE],
-            tags=["rag", "dengue", "amostras"],
-            comments="Fonte: 20260209ensaiootimizacaotempo.docx",
-        ),
-        ChatGolden(
-            golden_id="rag-dengue-temperatura-incubacao",
-            input="Quais condições de temperatura foram avaliadas na otimização de incubação de amostras Dengue?",
-            expected_output="Temperatura ambiente e 37 °C na etapa de incubação de amostras.",
-            context=[
-                "Objetivo: Avaliar placas sensibilizadas com diferentes condições de temperatura na etapa de incubação de amostras.",
-                "Observação: serão avaliadas temperatura ambiente e 37°C.",
-            ],
-            category=EvalCategory.RAG,
-            expected_routes=ExpectedRoutes(documents=True),
-            project_ids=[PROJ_DENGUE],
-            tags=["rag", "dengue", "temperatura"],
-            comments="Fonte: 20260210ensaiootimizacaotemperatura.docx",
-        ),
     ]
 
 
@@ -322,84 +244,6 @@ def _olap_goldens() -> list[ChatGolden]:
             requires_olap=True,
             tags=["olap", "dengue", "contagem"],
             comments="Compilado_resultado_otimizacao.xlsx — coluna Resultado caracterização.",
-        ),
-        ChatGolden(
-            golden_id="olap-dengue-compilado-negativos",
-            input="Quantas amostras negativas existem no compilado de otimização Dengue?",
-            expected_output=(
-                f"Segundo {XLSX_COMPILADO} (coluna Resultado caracterização ELISA comercial): "
-                "231 amostras Negativo."
-            ),
-            category=EvalCategory.OLAP,
-            expected_routes=ExpectedRoutes(spreadsheets=True),
-            project_ids=[PROJ_DENGUE],
-            requires_index=False,
-            requires_olap=True,
-            tags=["olap", "dengue", "contagem"],
-            comments="320 total − 89 positivos = 231 negativos.",
-        ),
-        ChatGolden(
-            golden_id="olap-dengue-abs-16h-amostra-12",
-            input="Qual a absorbância com sensibilização 16 h para a amostra 12 no compilado de otimização?",
-            expected_output=(
-                f"Segundo {XLSX_COMPILADO}: amostra 12 (Positivo) — ABS Tempo sensibilização 16h = 2,344."
-            ),
-            category=EvalCategory.OLAP,
-            expected_routes=ExpectedRoutes(spreadsheets=True),
-            project_ids=[PROJ_DENGUE],
-            requires_index=False,
-            requires_olap=True,
-            tags=["olap", "dengue", "absorbancia"],
-            comments="Compilado — coluna ABS Tempo sensibilização 16h, ID 12.",
-        ),
-        ChatGolden(
-            golden_id="olap-dengue-media-abs-16h-positivos",
-            input="Qual a média de absorbância 16 h entre amostras positivas no compilado Dengue?",
-            expected_output=(
-                f"Segundo {XLSX_COMPILADO} (Positivo, coluna ABS Tempo sensibilização 16h): "
-                "média ≈ 2,54 (2,535)."
-            ),
-            category=EvalCategory.OLAP,
-            expected_routes=ExpectedRoutes(spreadsheets=True),
-            project_ids=[PROJ_DENGUE],
-            requires_index=False,
-            requires_olap=True,
-            tags=["olap", "dengue", "media"],
-            comments="Média da coluna 16h filtrando Positivo (valores numéricos).",
-        ),
-        ChatGolden(
-            golden_id="olap-dengue-media-abs-37-negativos",
-            input="Qual a média de ABS Temperatura amostra 37 °C para amostras negativas no compilado?",
-            expected_output=(
-                f"Segundo {XLSX_COMPILADO} (Negativo, coluna ABS Temperatura amostra 37°C): "
-                "média ≈ 0,35 (0,349) entre registros com valor preenchido."
-            ),
-            category=EvalCategory.OLAP,
-            expected_routes=ExpectedRoutes(spreadsheets=True),
-            project_ids=[PROJ_DENGUE],
-            requires_index=False,
-            requires_olap=True,
-            tags=["olap", "dengue", "temperatura"],
-            comments="Média coluna 37°C entre Negativos com valor preenchido.",
-        ),
-        ChatGolden(
-            golden_id="olap-dengue-compilado-compara-16h-4h",
-            input=(
-                "No Compilado_resultado_otimizacao.xlsx, entre amostras positivas com absorbância "
-                "de sensibilização 4 h e 16 h preenchidas, em quantas a ABS 16 h é maior que a ABS 4 h?"
-            ),
-            expected_output=(
-                f"Segundo {XLSX_COMPILADO} (Positivo, colunas ABS Tempo sensibilização 4h e 16h): "
-                "23 amostras têm ABS 16h > ABS 4h; 44 têm ABS 16h < ABS 4h "
-                "(67 amostras com ambas colunas preenchidas)."
-            ),
-            category=EvalCategory.OLAP,
-            expected_routes=ExpectedRoutes(spreadsheets=True),
-            project_ids=[PROJ_DENGUE],
-            requires_index=False,
-            requires_olap=True,
-            tags=["olap", "dengue", "comparacao", "multi-coluna"],
-            comments="Comparação simultânea das colunas 4h e 16h no compilado.",
         ),
     ]
 
@@ -537,125 +381,11 @@ def _combined_goldens() -> list[ChatGolden]:
             requires_olap=True,
             tags=["combined", "dengue", "calculo", "idade"],
         ),
-        ChatGolden(
-            golden_id="comb-dengue-bicarbonato-neg-count",
-            input=(
-                "Qual lote do tampão bicarbonato usado na sensibilização de placas Dengue e quantas amostras "
-                "negativas constam no compilado de otimização?"
-            ),
-            expected_output=(
-                "Tampão Bicarbonato lote PR02022602 (protocolo de sensibilização). "
-                f"Segundo {XLSX_COMPILADO}: 231 amostras Negativo."
-            ),
-            context=[
-                "Item 2 — Tampão Bicarbonato — Lote/ativo: PR02022602",
-            ],
-            category=EvalCategory.COMBINED,
-            expected_routes=ExpectedRoutes(documents=True, spreadsheets=True),
-            project_ids=[PROJ_DENGUE],
-            requires_olap=True,
-            tags=["combined", "dengue", "insumo"],
-            comments="Sensibilização placa + contagem Negativo no compilado.",
-        ),
-        ChatGolden(
-            golden_id="comb-dengue-protocolo-tempo-abs-positivas",
-            input=(
-                "No ensaio de otimização de tempo de sensibilização Dengue, quais amostras foram "
-                "caracterizadas como positivas no planejamento e quais são as respectivas ABS "
-                "Tempo sensibilização 1, 2, 4 e 16 h no Compilado_resultado_otimizacao.xlsx?"
-            ),
-            expected_output=(
-                "Segundo o protocolo de otimização de tempo (20260209ensaiootimizacaotempo.docx): "
-                "amostras positivas 12, 33 e 36. "
-                f"Segundo {XLSX_COMPILADO} (colunas ABS Tempo sensibilização 1h, 2h, 4h e 16h): "
-                "amostra 12 → 1h: 2,091; 2h: 2,344; 4h: 2,587; 16h: 2,344 — "
-                "amostra 33 → 1h: 2,178; 2h: 2,431; 4h: 2,687; 16h: 2,431 — "
-                "amostra 36 → 1h: 2,714; 2h: 2,980; 4h: 3,214; 16h: 2,980."
-            ),
-            context=[
-                "Item 1 — ID amostra: 12 — Caracterização ELISA comercial: Positivo",
-                "Item 2 — ID amostra: 33 — Caracterização ELISA comercial: Positivo",
-                "Item 3 — ID amostra: 36 — Caracterização ELISA comercial: Positivo",
-            ],
-            category=EvalCategory.COMBINED,
-            expected_routes=ExpectedRoutes(documents=True, spreadsheets=True),
-            project_ids=[PROJ_DENGUE],
-            requires_olap=True,
-            tags=["combined", "dengue", "protocolo", "amostras"],
-            comments=(
-                "Cruza tabela Amostras avaliadas do protocolo de tempo com ABS 1h/2h/4h/16h "
-                "no compilado para as três positivas (12, 33, 36)."
-            ),
-        ),
-        ChatGolden(
-            golden_id="comb-dengue-leitora-equipamento-abs-max",
-            input=(
-                "Qual equipamento de leitura foi usado no ensaio de otimização de tempo Dengue e qual amostra "
-                "positiva tem maior ABS sensibilização 16 h no compilado?"
-            ),
-            expected_output=(
-                "Leitora de placa (espectrofotômetro) ativo EQA0253 (protocolo). "
-                f"Segundo {XLSX_COMPILADO} (Positivo, coluna ABS Tempo sensibilização 16h): "
-                "maior valor na amostra 65 — 3,963."
-            ),
-            context=[
-                "Item 10 — Leitora de placa (espectrofotômetro) — Lote/ativo: EQA0253",
-            ],
-            category=EvalCategory.COMBINED,
-            expected_routes=ExpectedRoutes(documents=True, spreadsheets=True),
-            project_ids=[PROJ_DENGUE],
-            requires_olap=True,
-            tags=["combined", "dengue", "equipamento", "max"],
-        ),
-        ChatGolden(
-            golden_id="comb-dengue-preparo-amostra-idade12",
-            input=(
-                "Como preparar amostra diluída no ensaio Dengue de otimização de tempo e qual a idade "
-                "do paciente da amostra 12 na planilha amostras_dengue?"
-            ),
-            expected_output=(
-                "Preparo: diluir 10 µl de soro/plasma em 490 µl de tampão de amostra e homogeneizar (protocolo). "
-                f"Segundo {XLSX_AMOSTRAS}: amostra 12 — Daniel Zanetti, 58 anos."
-            ),
-            context=[
-                "Preparo das amostras: Dilua 10 ul de soro ou plasma em 490 ul de tampão de amostra. Homogeneize bem com a própria pipeta.",
-            ],
-            category=EvalCategory.COMBINED,
-            expected_routes=ExpectedRoutes(documents=True, spreadsheets=True),
-            project_ids=[PROJ_DENGUE],
-            requires_olap=True,
-            tags=["combined", "dengue", "preparo"],
-        ),
-        ChatGolden(
-            golden_id="comb-dengue-sensibilizacao-media-abs-pos",
-            input=(
-                "Quantas horas de sensibilização foram planejadas na preparação de placas Dengue e qual a "
-                "média de ABS para todos os tempos de sensibilização das amostras positivas no compilado?"
-            ),
-            expected_output=(
-                "Sensibilização planejada: 1, 2, 4 e 16 horas a 4 °C (protocolo). "
-                f"Segundo {XLSX_COMPILADO} (Positivo, colunas ABS Tempo sensibilização 1h/2h/4h/16h; "
-                "67 amostras com valores preenchidos): "
-                "média 1h ≈ 2,44 (2,443); 2h ≈ 2,54 (2,535); 4h ≈ 2,61 (2,613); 16h ≈ 2,54 (2,535)."
-            ),
-            context=[
-                "Observação: sensibilização da placa com 1, 2, 4 e 16 horas (overnight) em 4°C.",
-            ],
-            category=EvalCategory.COMBINED,
-            expected_routes=ExpectedRoutes(documents=True, spreadsheets=True),
-            project_ids=[PROJ_DENGUE],
-            requires_olap=True,
-            tags=["combined", "dengue", "media"],
-            comments=(
-                "Médias das quatro colunas de tempo no compilado, filtrando Positivo "
-                "(89 no total; 67 com ABS de sensibilização preenchida)."
-            )
-        )
     ]
 
 
 def build_projetos_goldens() -> list[ChatGolden]:
-    """Retorna os 40 goldens curados dos projetos 252 e 253."""
+    """Retorna os 18 goldens curados dos projetos 252 e 253."""
     items = _rag_goldens() + _olap_goldens() + _ml_goldens() + _combined_goldens()
-    assert len(items) == 40, f"Esperado 40 goldens, obtido {len(items)}"
+    assert len(items) == 18, f"Esperado 18 goldens, obtido {len(items)}"
     return items

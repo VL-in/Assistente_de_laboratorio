@@ -211,6 +211,47 @@ def filter_runnable_goldens(goldens: Iterable[Any], runtime: EvalRuntime) -> tup
     return ok, skipped
 
 
+def extract_tools_called(crew_result: CrewRunResult) -> list[Any]:
+    """Constrói lista de ToolCall DeepEval a partir do CrewRunResult."""
+    from deepeval.test_case import ToolCall
+
+    tools: list[ToolCall] = []
+
+    triage = crew_result.triage
+    reasoning = getattr(triage, "reason", None) if triage else None
+
+    for name, result in crew_result.tool_results.items():
+        payload = result.payload or {}
+        output: Any
+        if name == "rag":
+            hits = payload.get("hits") or []
+            output = [
+                (h.get("cited") or h.get("text") or "")[:200]
+                for h in hits
+                if isinstance(h, dict)
+            ]
+        elif name == "olap":
+            sql = payload.get("sql")
+            df = payload.get("dataframe")
+            rows = int(len(df)) if df is not None else 0
+            output = {"sql": sql, "rows": rows}
+        elif name == "ml":
+            preds = payload.get("predictions")
+            output = preds[:3] if isinstance(preds, list) else preds
+        else:
+            output = str(payload)[:200] if payload else None
+
+        tools.append(
+            ToolCall(
+                name=name,
+                reasoning=reasoning,
+                output=output if result.ok else f"erro: {result.error}",
+            )
+        )
+
+    return tools
+
+
 def _extract_retrieval_context(crew_result: CrewRunResult) -> list[str]:
     rag = crew_result.tool_results.get("rag")
     if rag is None or not rag.ok:

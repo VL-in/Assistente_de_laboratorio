@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from openai import OpenAI
+from openai import OpenAI # type: ignore
 
 from ml.chat_infer import MlInferResult, run_chat_ml_inference
 from ml.paths import chat_ml_model_available, chat_ml_model_path
