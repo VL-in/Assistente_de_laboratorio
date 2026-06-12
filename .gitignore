@@ -4,6 +4,13 @@ venv/
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.cursor
+.claude
+.venv-evals
+
+# Regras de negócio (planilhas/templates locais)
+Regras de negócio/
+
 
 # Índice txtai local (desenvolvimento fora do Docker)
 apps/streamlit/.txtai_data/
@@ -22,3 +29,7 @@ apps/streamlit/evals/results/
 
 # Skill Langfuse copiado localmente para o Cursor (instale via npx skills add)
 .cursor/skills/
+
+logs\correcoes
+logs\correcoes\*.log
+scripts
