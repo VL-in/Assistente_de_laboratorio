@@ -69,9 +69,15 @@ def predict_from_bundle(bundle: ModelBundle, df: pd.DataFrame) -> pd.DataFrame:
     if getattr(bundle, "task", "classification") == "regression":
         return out
     if hasattr(bundle.pipeline, "predict_proba"):
-        proba = bundle.predict_proba(work)
-        for cls in proba.columns:
-            out[f"prob_{cls}"] = proba[cls].values
+        # Probabilidades são opcionais ("se possível"): uma falha aqui (estimador
+        # sem suporte real, problema numérico, classe ausente) não deve invalidar
+        # a predição de label já calculada com sucesso acima.
+        try:
+            proba = bundle.predict_proba(work)
+            for cls in proba.columns:
+                out[f"prob_{cls}"] = proba[cls].values
+        except (AttributeError, ValueError):
+            pass
     return out
 
 

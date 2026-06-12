@@ -156,8 +156,23 @@ def build_messages(
 
     system_prompt = "\n\n".join(blocks)
 
+    current = (user_message or "").strip()
+
+    # Separa a mensagem ATUAL do usuário do histórico antes de truncar. Ela é a
+    # pergunta que estamos respondendo, então deve entrar no prompt SEMPRE e
+    # SEMPRE COMPLETA (a truncagem por ``max_chars_per_message`` vale só para o
+    # histórico antigo). Tratá-la junto com o histórico causava dois defeitos:
+    #   1) truncá-la cortava o fim da pergunta (ex.: sequências de aminoácidos
+    #      na rota ML, que excedem 280–400 chars);
+    #   2) a comparação anti-duplicação batia a versão truncada contra a completa
+    #      e re-anexava a mensagem, duplicando-a no prompt.
+    history_for_context = history
+    if current and history and history[-1].get("role") == "user" \
+            and str(history[-1].get("content") or "").strip() == current:
+        history_for_context = history[:-1]
+
     trimmed_history = _trim_history(
-        history,
+        history_for_context,
         max_history_turns=max_history_turns,
         max_chars_per_message=max_chars_per_message,
     )
@@ -173,11 +188,8 @@ def build_messages(
             }
         )
 
-    current = (user_message or "").strip()
     if current:
-        last = trimmed_history[-1] if trimmed_history else None
-        if not last or last.get("role") != "user" or str(last.get("content") or "").strip() != current:
-            api_messages.append({"role": "user", "content": current})
+        api_messages.append({"role": "user", "content": current})
 
     return SynthesizerInput(
         system_prompt=system_prompt,
