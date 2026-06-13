@@ -30,6 +30,7 @@ apps/streamlit/evals/results/
 # Skill Langfuse copiado localmente para o Cursor (instale via npx skills add)
 .cursor/skills/
 
-logs\correcoes
-logs\correcoes\*.log
+# Logs locais (correções, execuções) — não versionar
+logs/
 scripts
+Histórico/

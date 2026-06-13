@@ -32,15 +32,15 @@ Assistente_de_lab/
     ├── ml/                     # ML tradicional: FLAML, chat_infer, .pkl
     ├── rag/                    # Extração, chunking, índice txtai (busca híbrida + rerank)
     ├── evals/                  # Avaliação DeepEval end-to-end
-    │   ├── run_assistente_eval.py      # CLI principal: executa os 40 goldens
+    │   ├── run_assistente_eval.py      # CLI principal: executa os 18 goldens
     │   ├── harness.py                  # Runtime: EvalRuntime, TurnResult
     │   ├── golden_dataset_template.py  # Template curador (ChatGolden, categorias)
-    │   ├── goldens_projetos_252_253.py # 40 goldens reais (Chikungunya + Dengue)
+    │   ├── goldens_projetos_252_253.py # 18 goldens reais (Chikungunya + Dengue)
     │   ├── judge_model.py              # LLM-as-judge (OpenRouter / OpenAI)
     │   ├── eval_bootstrap.py           # Config throttle/retry para OpenRouter free
     │   ├── datasets/                   # JSON/JSONL exportados dos goldens
     │   └── results/                    # Saídas: test_cases_*.json + métricas
-    ├── tests/                  # ~155 testes unitários
+    ├── tests/                  # ~195 testes unitários
     ├── requirements.txt        # App (inclui requirements-base.txt)
     └── requirements-evals.txt  # Evals (sem CrewAI — conflito posthog)
 ```
@@ -354,16 +354,16 @@ Pipeline de avaliação automatizada do assistente usando **[DeepEval](https://d
 
 > **Conflito de dependências:** CrewAI exige `posthog<6`; DeepEval exige `posthog>=7`. Por isso existe um `requirements-evals.txt` separado (sem CrewAI). No Docker, a imagem já inclui os dois conjuntos de dependências e o conflito é contornado na ordem de instalação.
 
-### Dataset de golden: 40 casos reais
+### Dataset de golden: 18 casos reais
 
 O dataset cobre os projetos **252 (Chikungunya ELISA)** e **253 (Dengue ELISA)** com perguntas derivadas dos documentos e planilhas reais do laboratório:
 
 | Categoria | Qtd | O que avalia |
 |-----------|-----|--------------|
-| `rag` | 10 | Perguntas sobre protocolos, validade de antígenos, reagentes (documentos DOCX/PDF) |
-| `olap` | 10 | Consultas analíticas sobre amostras e resultados (planilhas XLSX no DuckDB) |
-| `ml` | 10 | Predição `log_Aff` para pares Ab–Ag de literatura (ESM-2 + modelo `.pkl`) |
-| `combined` | 10 | RAG + OLAP combinados na mesma pergunta |
+| `rag` | 5 | Perguntas sobre protocolos, validade de antígenos, reagentes (documentos DOCX/PDF) |
+| `olap` | 5 | Consultas analíticas sobre amostras e resultados (planilhas XLSX no DuckDB) |
+| `ml` | 3 | Predição `log_Aff` para pares Ab–Ag de literatura (ESM-2 + modelo `.pkl`) |
+| `combined` | 5 | RAG + OLAP combinados na mesma pergunta |
 
 Arquivo fonte: [`apps/streamlit/evals/goldens_projetos_252_253.py`](apps/streamlit/evals/goldens_projetos_252_253.py)
 
@@ -372,7 +372,7 @@ Arquivo fonte: [`apps/streamlit/evals/goldens_projetos_252_253.py`](apps/streaml
 ```
 Fase 1: Bootstrap   →   Fase 2: Geração de respostas   →   Fase 3: Métricas (LLM-as-judge)
 eval_bootstrap.py        harness.py + run_crew_chat()        judge_model.py + DeepEval
-(throttle, retry)        40 perguntas → JSON intermediário   scores por caso → JSON final
+(throttle, retry)        18 perguntas → JSON intermediário   scores por caso → JSON final
 ```
 
 **Fase 1 — Bootstrap (`eval_bootstrap.py`):** desliga Langfuse (`LANGFUSE_ENABLED=0`), configura throttle conservador para o tier gratuito do OpenRouter (`LLM_MIN_REQUEST_INTERVAL_S=12`, `LLM_RETRY_MAX_ATTEMPTS=10`, `LLM_RETRY_BASE_DELAY_S=25`).
@@ -386,7 +386,7 @@ eval_bootstrap.py        harness.py + run_crew_chat()        judge_model.py + De
 **Script PowerShell (forma mais fácil):**
 
 ```powershell
-# Roda todos os 40 casos (fases 2 + 3)
+# Roda todos os 18 casos (fases 2 + 3)
 .\scripts\run_evals_docker.ps1
 
 # Limitar casos e filtrar categoria
@@ -488,26 +488,31 @@ evals/
 
 ### Adicionar novos goldens
 
-Edite `apps/streamlit/evals/goldens_projetos_252_253.py` seguindo a estrutura de `ChatGolden`:
+Edite `apps/streamlit/evals/goldens_projetos_252_253.py` adicionando um `ChatGolden` à
+função da categoria correspondente (`_rag_goldens`, `_olap_goldens`, `_ml_goldens` ou
+`_combined_goldens`). Os campos são planos (não use `additional_metadata` — ele é montado
+internamente em `to_deepeval_dict`). Categoria e rotas usam os enums `EvalCategory` e
+`ExpectedRoutes`:
 
 ```python
 ChatGolden(
+    golden_id="rag-elisa-concentracao-01",
     input="Qual a concentração do anticorpo primário no protocolo ELISA?",
     expected_output="A concentração recomendada é 1:1000 em PBS-T...",
     context=["trecho do documento que contém a resposta"],
+    category=EvalCategory.RAG,           # RAG | OLAP | ML | COMBINED | OUT_OF_SCOPE | GREETING
+    expected_routes=ExpectedRoutes(documents=True),
+    requires_index=True,                 # padrão True
+    requires_olap=False,
+    requires_ml_model=False,
+    project_ids=["252"],
+    tags=["elisa", "anticorpo", "concentração"],
     comments="Fonte: protocolo_elisa_v3.docx",
-    additional_metadata={
-        "category": "rag",            # rag | olap | ml | combined | out_of_scope
-        "requires_index": True,
-        "requires_olap": False,
-        "requires_ml_model": False,
-        "tags": ["elisa", "anticorpo", "concentração"],
-        "golden_id": "rag-elisa-concentracao-01",
-        "expected_routes": {"documents": True, "spreadsheets": False, "ml_prediction": False},
-        "project_ids": ["252"],
-    },
 )
 ```
+
+> Ao adicionar/remover casos, ajuste também a asserção `assert len(items) == 18` em
+> `build_projetos_goldens()` (e o docstring) para o novo total.
 
 Depois exporte o dataset atualizado:
 
@@ -557,7 +562,7 @@ Fora do Docker, se `ASSISTENTE_PROJETOS_DIR` não estiver definida, o loader usa
 | `unhealthy` no Docker | Streamlit não subiu | `docker compose logs streamlit` |
 | Permissão negada em arquivos | Bind somente leitura | Usuário da imagem (`uid 10001`) precisa ler os arquivos no host |
 | **Eval abortada no meio** (`RuntimeError: Resposta LLM vazia`) | OpenRouter free retornou HTTP 200 sem `choices` (rate limit silencioso) | O retry automático (até 10 tentativas) já cobre isso; se persistir, aumente `LLM_MIN_REQUEST_INTERVAL_S` para `15–20` ou use `--request-interval` |
-| Eval muito lenta (> 3 h para 40 casos) | Backoff exponencial muito longo | Reduza `LLM_RETRY_BASE_DELAY_S` para `15` e garanta `LLM_MIN_REQUEST_INTERVAL_S=10` |
+| Eval muito lenta (> 1 h para 18 casos) | Backoff exponencial muito longo | Reduza `LLM_RETRY_BASE_DELAY_S` para `15` e garanta `LLM_MIN_REQUEST_INTERVAL_S=10` |
 | `posthog` conflict no `pip install` | CrewAI e DeepEval no mesmo venv | Use `requirements-evals.txt` (venv sem CrewAI); no Docker o conflito já está resolvido |
 | Casos `ml` pulados com `--skip-unavailable` | Modelo `.pkl` não treinado ou `ASSISTENTE_ML_CHAT_MODEL` não aponta para arquivo válido | Treine o modelo na aba ML e configure a variável; ou rode apenas `--category rag` |
 
@@ -580,7 +585,7 @@ Fora do Docker, se `ASSISTENTE_PROJETOS_DIR` não estiver definida, o loader usa
 | **Runtime de avaliação** | `apps/streamlit/evals/harness.py` |
 | **Dataset de goldens** | `apps/streamlit/evals/goldens_projetos_252_253.py` |
 | **Throttle e retry de evals** | `apps/streamlit/evals/eval_bootstrap.py`, `qwen35_inference.py` |
-| Testes unitários (~155) | `apps/streamlit/tests/` |
+| Testes unitários (~195) | `apps/streamlit/tests/` |
 | Imagem e healthcheck | `docker/streamlit/Dockerfile` |
 | Portas, volumes, env | `docker-compose.yml` |
 
