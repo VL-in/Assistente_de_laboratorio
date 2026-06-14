@@ -154,6 +154,34 @@ class TriageTests(unittest.TestCase):
         self.assertFalse(d.use_olap)
         self.assertFalse(d.use_ml)
 
+    @patch("agents.triage._classify_with_llm")
+    def test_records_blocked_unavailable_routes(self, mock_llm: MagicMock) -> None:
+        mock_llm.return_value = TriageDecision(
+            use_rag=True, use_olap=True, use_ml=False, source="llm", reason=""
+        )
+        d = classify_intent(
+            "Quais são as amostras positivas testadas no dia 09/02?",
+            client=MagicMock(),
+            model="m",
+            documents_available=False,
+            spreadsheets_available=False,
+        )
+        self.assertEqual(set(d.blocked_unavailable), {"documents", "spreadsheets"})
+
+    @patch("agents.triage._classify_with_llm")
+    def test_no_blocked_routes_when_nothing_requested(self, mock_llm: MagicMock) -> None:
+        mock_llm.return_value = TriageDecision(
+            use_rag=False, use_olap=False, use_ml=False, source="llm", reason="saudação"
+        )
+        d = classify_intent(
+            "consulta",
+            client=MagicMock(),
+            model="m",
+            documents_available=False,
+            spreadsheets_available=False,
+        )
+        self.assertEqual(d.blocked_unavailable, ())
+
 
 class DispatchSpecialistsTests(unittest.TestCase):
     def _ctx(self, **overrides) -> CrewContext:
@@ -310,6 +338,38 @@ class BuildMessagesTests(unittest.TestCase):
         )
         self.assertIn("RAG (falha)", si.system_prompt)
         self.assertIn("não foi construído", si.system_prompt)
+
+    def test_blocked_unavailable_route_warns_synthesizer(self) -> None:
+        decision = TriageDecision(
+            use_rag=False,
+            use_olap=False,
+            use_ml=False,
+            source="rules_fallback",
+            reason="fallback por regex",
+            blocked_unavailable=("documents",),
+        )
+        si = build_messages(
+            user_message="Quais são as amostras positivas testadas no dia 09/02?",
+            history=[],
+            tool_results={},
+            model_id="any",
+            triage_decision=decision,
+        )
+        self.assertIn("indisponível", si.system_prompt)
+        self.assertNotIn("search_web", si.system_prompt)
+
+    def test_no_warning_when_nothing_blocked(self) -> None:
+        decision = TriageDecision(
+            use_rag=True, use_olap=False, use_ml=False, source="llm", reason=""
+        )
+        si = build_messages(
+            user_message="Q",
+            history=[],
+            tool_results={},
+            model_id="any",
+            triage_decision=decision,
+        )
+        self.assertNotIn("indisponível", si.system_prompt)
 
 
 if __name__ == "__main__":

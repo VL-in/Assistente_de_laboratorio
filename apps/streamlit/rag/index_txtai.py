@@ -218,21 +218,30 @@ def rows_for_file(
     if not parts:
         return [], False, None
 
+    # Cabeçalho com título/datas do ensaio (ex.: "[Ensaio: ... | Planejamento:
+    # 09/02/2026 | Execução: 09/02/2026]"). Repetido em TODOS os chunks do
+    # arquivo, não só no primeiro: sem isso, chunks que carregam apenas tabelas
+    # (ex.: "Amostras avaliadas") não trazem nenhuma referência à data do
+    # ensaio e não casam com perguntas como "amostras do dia 09/02" — ver
+    # logs/correcoes/2026-06-13-plano-rag-chunk-context.md.
+    doc_header = outcome.doc_header
+
     rows: list[Row] = []
     for idx, part in enumerate(parts):
         uid = chunk_uid(sf, idx)
-        # O prefixo de citação fica no campo "cited" (exibição / contexto LLM).
-        # O campo "text" contém apenas o conteúdo puro, sem o prefixo.
-        # Separar os dois campos é essencial para a qualidade do embedding:
-        # se o prefixo "[Projeto: X] [Arquivo: Y]" fosse incluído no "text",
-        # todos os chunks teriam um vetor parcialmente idêntico (o prefixo),
-        # o que reduz a discriminação semântica e produz resultados irrelevantes.
+        # Cabeçalho de ensaio entra no próprio "text" (afeta o embedding e o
+        # BM25 — é isso que permite o casamento por data). O prefixo de
+        # citação "[Projeto: X] [Arquivo: Y] [Chunk N]" continua só em
+        # "cited" (exibição / contexto LLM): incluí-lo em "text" tornaria os
+        # vetores de todos os chunks parcialmente idênticos, reduzindo a
+        # discriminação semântica.
+        text_with_header = f"{doc_header}\n{part}" if doc_header else part
         cited = (
             f"[Projeto: {sf.project_id}] [Arquivo: {sf.relative_path}] [Chunk {idx}]\n"
-            f"{part}"
+            f"{text_with_header}"
         )
         row_dict = {
-            "text": part,    # somente conteúdo → qualidade máxima do embedding
+            "text": text_with_header,
             "cited": cited,  # texto completo com citação → exibição e contexto LLM
             "project_id": sf.project_id,
             "relative_path": sf.relative_path,

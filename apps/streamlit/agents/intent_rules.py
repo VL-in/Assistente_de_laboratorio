@@ -30,14 +30,22 @@ SOCIAL_ONLY = re.compile(
     re.IGNORECASE,
 )
 
+# Sufixo de plural português regular (lote→lotes, fabricante→fabricantes,
+# material→materiais). Mantém o ``\b`` inicial para não casar no meio de outra
+# palavra, mas permite o plural — sem ele, "amostras" não casava "amostra"
+# e o fallback rule-based classificava perguntas de laboratório como sociais.
+_PT_PLURAL = r"(?:s|es|is)?"
+
 # Vocabulário típico de pergunta sobre documentos de experimentos/protocolos.
+# Termos de uma palavra aceitam plural; expressões compostas ficam à parte.
 LAB_DOC_HINT = re.compile(
     r"\b(?:"
     r"lote|validade|reagente|insumo|ensaio|elisa|experimento|"
     r"documento|protocolo|planejamento|fabricante|"
     r"material|amostra|dilui|placa|coating|"
-    r"usamos|utilizamos|qual\s+foi|quando\s+foi|onde\s+está"
-    r")\b",
+    r"usamos|utilizamos"
+    r")" + _PT_PLURAL + r"\b"
+    r"|\b(?:qual\s+foi|quando\s+foi|onde\s+está)\b",
     re.IGNORECASE,
 )
 
@@ -62,13 +70,17 @@ ML_INFERENCE_HINT = re.compile(
 )
 
 # Vocabulário de análise tabular: contagens, médias, agrupamentos.
+# Termos de uma palavra no singular + ``_PT_PLURAL`` cobrem ambas as formas
+# (linha/linhas, registro/registros). Expressões compostas e advérbios
+# (quantos, por projeto) ficam à parte, sem sufixo de plural.
 TABULAR_HINT = re.compile(
     r"\b(?:"
     r"planilha|tabela|csv|xlsx|"
-    r"quantos|quantas|média|media|soma|total|contagem|"
-    r"comparar|comparação|comparacao|ranking|agrupar|"
-    r"por\s+projeto|linhas|colunas|registros"
-    r")\b",
+    r"média|media|soma|total|contagem|"
+    r"comparação|comparacao|ranking|"
+    r"linha|coluna|registro"
+    r")" + _PT_PLURAL + r"\b"
+    r"|\b(?:quantos|quantas|comparar|agrupar|por\s+projeto)\b",
     re.IGNORECASE,
 )
 

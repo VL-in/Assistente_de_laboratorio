@@ -73,6 +73,17 @@ class RuleFallbackTests(unittest.TestCase):
         self.assertFalse(olap)
         self.assertFalse(ml)
 
+    def test_lab_keywords_plural(self) -> None:
+        # Cenário real (BDD): com o LLM de triagem indisponível, o fallback
+        # precisa reconhecer termos de laboratório no plural. "amostras",
+        # "lotes", "reagentes" etc. casavam apenas no singular por causa do
+        # ``\b`` de fechamento na regex — quebrava perguntas como esta.
+        rag, olap, ml = rule_fallback(
+            "Quais são as amostras positivas testadas no dia 09/02?"
+        )
+        self.assertTrue(rag)
+        self.assertFalse(ml)
+
     def test_tabular_keywords(self) -> None:
         rag, olap, ml = rule_fallback(
             "Quantos registros por projeto na planilha?"

@@ -24,6 +24,7 @@ muito grandes inteiramente na RAM. Arquivos truncados são indexados normalmente
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -49,11 +50,18 @@ class ExtractOutcome:
     ok:
         ``True`` se o texto foi extraído com sucesso (mesmo que truncado).
         ``False`` indica falha de parsing ou arquivo sem conteúdo.
+    doc_header:
+        Cabeçalho curto do documento (título + datas de planejamento/execução),
+        quando detectável. ``None`` para formatos onde o cabeçalho não se
+        aplica (planilhas, CSV, etc.). Usado para prefixar todos os chunks do
+        arquivo, garantindo que a data do ensaio chegue até chunks distantes
+        do início do documento — ver ``rows_for_file``.
     """
 
     text: str
     detail: str
     ok: bool
+    doc_header: str | None = None
 
 
 # ── Roteador principal ───────────────────────────────────────────────────────
@@ -103,6 +111,48 @@ def _truncate(s: str, limit: int) -> tuple[str, bool]:
     if len(s) <= limit:
         return s, False
     return s[:limit], True
+
+
+# ── Cabeçalho de documento (título + datas) ─────────────────────────────────
+
+_DATE_LINE_RE = re.compile(
+    r"^(Planejamento|Execu[çc][ãa]o)\s*:\s*(\d{1,2}/\d{1,2}/\d{2,4})",
+    re.IGNORECASE,
+)
+
+
+def _extract_doc_header(text: str, *, max_lines: int = 6) -> str | None:
+    """
+    Extrai um cabeçalho curto (título + datas) das primeiras linhas do texto.
+
+    Os documentos de planejamento do laboratório seguem o padrão:
+    ``<título do ensaio>`` na 1ª linha, seguido de ``Planejamento: DD/MM/AAAA``
+    e ``Execução: DD/MM/AAAA``. Esse cabeçalho é a única referência à data do
+    ensaio no documento — sem repeti-lo em todos os chunks, perguntas como
+    "amostras usadas no dia 09/02" não casam com chunks que contêm a tabela
+    de amostras, mas não a data (ver plano em ``logs/correcoes``).
+
+    Retorna ``None`` se nenhuma linha ``Planejamento:``/``Execução:`` for
+    encontrada nas primeiras ``max_lines`` linhas — documentos sem esse
+    padrão não recebem prefixo (evita ruído em formatos não relacionados a
+    ensaios).
+    """
+    lines = [ln.strip() for ln in text.splitlines()[:max_lines] if ln.strip()]
+    if not lines:
+        return None
+
+    title = lines[0]
+    dates: list[str] = []
+    for ln in lines[1:]:
+        m = _DATE_LINE_RE.match(ln)
+        if m:
+            label = "Planejamento" if m.group(1).lower().startswith("planej") else "Execução"
+            dates.append(f"{label}: {m.group(2)}")
+
+    if not dates:
+        return None
+
+    return f"[Ensaio: {title} | " + " | ".join(dates) + "]"
 
 
 # ── Helpers para documentos Word (.docx) ────────────────────────────────────
@@ -462,7 +512,7 @@ def _extract_docx(path: Path, *, max_chars_total: int) -> ExtractOutcome:
     detail = f"docx: {n_paras_val} parágrafo(s), {n_tables_val} tabela(s)"
     if cut:
         detail += f" (truncado a {max_chars_total} caracteres)"
-    return ExtractOutcome(text=text, detail=detail, ok=bool(text))
+    return ExtractOutcome(text=text, detail=detail, ok=bool(text), doc_header=_extract_doc_header(text))
 
 
 def _extract_excel(path: Path, *, max_chars_total: int) -> ExtractOutcome:

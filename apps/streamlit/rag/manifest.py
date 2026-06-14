@@ -41,8 +41,10 @@ MANIFEST_FILENAME = "index_manifest.json"
 
 # Incrementar este valor sempre que a lógica de extração de texto mudar de
 # forma que documentos já indexados precisem ser reprocessados para refletir
-# o novo comportamento (ex.: v1 → v2 quando tabelas Word foram adicionadas).
-EXTRACTION_LOGIC_VERSION = 3
+# o novo comportamento (ex.: v1 → v2 quando tabelas Word foram adicionadas;
+# v3 → v4 quando o cabeçalho de ensaio (título + datas) passou a ser
+# repetido em todos os chunks de um arquivo, não só no primeiro).
+EXTRACTION_LOGIC_VERSION = 4
 
 
 # ── Chave de arquivo ────────────────────────────────────────────────────────

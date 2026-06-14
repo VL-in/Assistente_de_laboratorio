@@ -185,6 +185,7 @@ def run_crew_chat(
             history=history_with_user,
             tool_results=tool_results,
             model_id=model,
+            triage_decision=triage.decision,
             max_history_turns=max_history_turns,
             max_chars_per_message=max_chars_per_message,
         )

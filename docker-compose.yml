@@ -8,6 +8,10 @@ services:
       dockerfile: docker/embeddings/Dockerfile
     container_name: assistente-lab-embeddings
     restart: unless-stopped
+    # Teto de RAM: TEI aloca buffers por max-batch-tokens; sem limite chega a ~3 GB.
+    mem_limit: ${EMBEDDINGS_MEM_LIMIT:-2g}
+    mem_reservation: 768m
+    cpus: ${EMBEDDINGS_CPUS:-2}
     environment:
       HF_HOME: /data
     volumes:
@@ -25,6 +29,11 @@ services:
       dockerfile: docker/streamlit/Dockerfile
     container_name: assistente-lab-streamlit
     restart: unless-stopped
+    # Teto de RAM: torch + transformers + ESM-2 carregados em memória; observado
+    # subindo de 0,7 para >1,1 GB. Limite evita crescimento descontrolado.
+    mem_limit: ${STREAMLIT_MEM_LIMIT:-3g}
+    mem_reservation: 1g
+    cpus: ${STREAMLIT_CPUS:-3}
     depends_on:
       embeddings:
         condition: service_healthy

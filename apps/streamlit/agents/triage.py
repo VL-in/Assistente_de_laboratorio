@@ -40,8 +40,8 @@ _TRIAGE_SYSTEM = """Você é o agente de triagem do assistente de laboratório.
 Sua única tarefa: ler a última mensagem do usuário e decidir quais especialistas devem agir.
 
 Especialistas disponíveis:
-- documents (RAG): documentos Word/PDF de experimentos, protocolos, lotes, validades, materiais.
-- spreadsheets (OLAP): planilhas e CSVs com dados tabulares — contagens, médias, somas, comparações, rankings.
+- documents (RAG): documentos Word/PDF de experimentos que contém objetivo dos ensaios, preparos, protocolos, informações sobre insumos (lotes, validades, fabricantes, códigos) e amostras selecionadas para o ensaio.
+- spreadsheets (OLAP): planilhas e CSVs com dados tabulares — contagens, médias, somas, comparações, rankings. Os tipos de arquivos variam entre informações sobre amostras ou resultados de experimentos.
 - ml_prediction: modelo ML treinado para afinidade Ab–Ag (AbRank, regressão log_Aff). Usar quando o usuário pergunta sobre afinidade de ligação anticorpo e antígeno e fornece as sequências.
 
 Responda APENAS com JSON válido (sem markdown, sem explicação):
@@ -50,7 +50,8 @@ Responda APENAS com JSON válido (sem markdown, sem explicação):
 Regras:
 - ml_prediction=true só com pedido de predição/inferência quando o usuário fornecer as três sequencias de aminoácidos. Os nomes podem variar, mas devem corresponder algo similar a Heavy Chain ou H (Ab_heavy_chain_seq), Light Chain ou L (Ab_light_chain_seq) ou Ag (Ag_seq).
 - Quando ml_prediction=true, force documents=false e spreadsheets=false (a predição é autocontida).
-- Para saudação/agradecimento/conversa social: tudo false e reason="saudação".
+- Caso a mensagem contém apenas saudação/agradecimento/conversa social: tudo false e reason="saudação".
+- Caso a mensagem contém saudação + pedido de ação: especialistas true conforme o pedido, reason="pedido".
 - Vários especialistas podem ser true ao mesmo tempo se a pergunta misturar tópicos."""
 
 _TRIAGE_USER_TEMPLATE = """Histórico recente:
@@ -71,6 +72,7 @@ class TriageDecision:
     use_ml: bool
     source: str  # "rules" | "llm" | "rules_fallback" | "social"
     reason: str = ""
+    blocked_unavailable: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -79,6 +81,7 @@ class TriageDecision:
             "use_ml": self.use_ml,
             "source": self.source,
             "reason": self.reason,
+            "blocked_unavailable": list(self.blocked_unavailable),
         }
 
 
@@ -155,6 +158,12 @@ def classify_intent(
             reason=decision.reason or "modelo ML indisponível",
         )
 
+    blocked: list[str] = []
+    if not documents_available and decision.use_rag:
+        blocked.append("documents")
+    if not spreadsheets_available and decision.use_olap:
+        blocked.append("spreadsheets")
+
     if not documents_available:
         decision = TriageDecision(
             use_rag=False,
@@ -162,6 +171,7 @@ def classify_intent(
             use_ml=decision.use_ml,
             source=decision.source,
             reason=decision.reason,
+            blocked_unavailable=decision.blocked_unavailable,
         )
     if not spreadsheets_available:
         decision = TriageDecision(
@@ -170,6 +180,16 @@ def classify_intent(
             use_ml=decision.use_ml,
             source=decision.source,
             reason=decision.reason,
+            blocked_unavailable=decision.blocked_unavailable,
+        )
+    if blocked:
+        decision = TriageDecision(
+            use_rag=decision.use_rag,
+            use_olap=decision.use_olap,
+            use_ml=decision.use_ml,
+            source=decision.source,
+            reason=decision.reason,
+            blocked_unavailable=tuple(blocked),
         )
 
     if ml_available and (

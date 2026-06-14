@@ -14,6 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from agents.tools import ToolResult
+from agents.triage import TriageDecision
 from qwen35_inference import sanitize_history_message
 
 # System prompts mantidos compatíveis com ``app.py`` para preservar tom e
@@ -88,6 +89,7 @@ def build_messages(
     history: list[dict],
     tool_results: dict[str, ToolResult],
     model_id: str,
+    triage_decision: TriageDecision | None = None,
     max_history_turns: int | None = None,
     max_chars_per_message: int | None = None,
 ) -> SynthesizerInput:
@@ -112,6 +114,12 @@ def build_messages(
     - ``max_chars_per_message``: corte por mensagem (com ``…`` no fim). ``None``
       = não corta. Útil na rota ML para evitar inflar o prompt com respostas
       longas anteriores.
+
+    ``triage_decision``: quando o Triage queria acionar RAG/OLAP mas o
+    subsistema correspondente está indisponível (``blocked_unavailable``), a
+    Tool correspondente nunca roda e ``tool_results`` não traz a chave — sem
+    isso o Synthesizer ficaria sem nenhum aviso e pode alucinar ferramentas
+    inexistentes (ex.: ``search_web``).
     """
     used_ml = "ml" in tool_results and tool_results["ml"].ok
 
@@ -154,6 +162,9 @@ def build_messages(
                 or f"### Predição ML (falha)\n{ml_result.error}"
             )
 
+    if triage_decision is not None and triage_decision.blocked_unavailable:
+        blocks.append(_unavailable_routes_block(triage_decision.blocked_unavailable))
+
     system_prompt = "\n\n".join(blocks)
 
     current = (user_message or "").strip()
@@ -195,6 +206,33 @@ def build_messages(
         system_prompt=system_prompt,
         messages=api_messages,
         used_ml=used_ml,
+    )
+
+
+_ROUTE_LABELS = {
+    "documents": "o índice de documentos (RAG)",
+    "spreadsheets": "as planilhas ingeridas (OLAP/DuckDB)",
+}
+
+
+def _unavailable_routes_block(blocked: tuple[str, ...]) -> str:
+    """
+    Bloco avisando que o Triage identificou a pergunta como relevante para
+    RAG/OLAP, mas o subsistema correspondente está indisponível (índice não
+    construído / nenhuma planilha ingerida).
+
+    Sem este aviso, ``tool_results`` fica vazio para essas rotas e o
+    Synthesizer não tem nenhuma pista de que faltou contexto — alguns modelos
+    reagem inventando ferramentas externas (ex.: ``search_web``).
+    """
+    items = ", ".join(_ROUTE_LABELS.get(name, name) for name in blocked)
+    return (
+        "### Aviso: fonte de dados indisponível\n"
+        f"A pergunta parece precisar de {items}, mas isso não está disponível "
+        "nesta sessão (índice não construído ou sem dados ingeridos). "
+        "Informe isso diretamente ao usuário (ex.: \"não encontrei essa "
+        "informação porque os documentos/planilhas ainda não foram indexados "
+        "nesta sessão\") e não tente usar nenhuma ferramenta externa de busca."
     )
 
 

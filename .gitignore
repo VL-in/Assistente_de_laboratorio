@@ -32,5 +32,5 @@ apps/streamlit/evals/results/
 
 # Logs locais (correções, execuções) — não versionar
 logs/
-scripts
+scripts/
 Histórico/
