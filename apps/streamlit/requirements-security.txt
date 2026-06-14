@@ -1,0 +1,25 @@
+# Camada de segurança/privacidade do Crew — ver agents/security.py e
+# logs/correcoes/2026-06-12-relatorio-seguranca-llm.md (itens P1-1..P1-4).
+#
+# Dependências OBRIGATÓRIAS (sem bypass silencioso), porém enxutas: usamos os
+# modelos spaCy *small* e mantemos os guardrails de entrada/saída em regex leve
+# (em agents/security.py), de modo a NÃO arrastar os scanners transformers
+# pesados do LLM Guard para dentro da imagem.
+
+# ── PII (Microsoft Presidio) — borda externa (OpenRouter/Langfuse) ───────────
+# https://github.com/microsoft/presidio
+presidio-analyzer>=2.2.0,<3.0.0
+presidio-anonymizer>=2.2.0,<3.0.0
+
+# Motor NLP do Presidio. Os modelos *small* (pt/en) são baixados no build:
+#   python -m spacy download pt_core_news_sm
+#   python -m spacy download en_core_web_sm
+spacy>=3.7.0,<4.0.0
+
+# ── LLM Guard (guardrails de entrada/saída) — OPCIONAL/leve ──────────────────
+# https://github.com/protectai/llm-guard
+# A proteção principal de entrada/saída (prompt-injection, anti-exfiltração
+# markdown) já é feita por heurística regex em agents/security.py e NÃO exige
+# esta dependência. Descomente para ativar os scanners adicionais do LLM Guard
+# (TokenLimit, MaliciousURLs); aumenta o tamanho da imagem (transformers).
+# llm-guard>=0.3.0,<1.0.0

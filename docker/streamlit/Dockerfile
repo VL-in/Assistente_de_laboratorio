@@ -12,12 +12,18 @@ RUN useradd --create-home --shell /bin/bash --uid 10001 appuser
 
 WORKDIR /app
 
-COPY apps/streamlit/requirements-base.txt apps/streamlit/requirements.txt /app/
+COPY apps/streamlit/requirements-base.txt apps/streamlit/requirements.txt apps/streamlit/requirements-security.txt /app/
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu \
     && pip install --no-cache-dir -r /app/requirements.txt \
     && python -c "import duckdb; print('duckdb', duckdb.__version__)" \
     && python -c "from flaml import AutoML; print('flaml', AutoML.__name__)"
+
+# Modelos spaCy *small* (PT+EN) usados pelo Presidio (camada de PII). São os
+# modelos leves — mantêm a imagem enxuta conforme decisão de projeto.
+RUN python -m spacy download pt_core_news_sm \
+    && python -m spacy download en_core_web_sm \
+    && python -c "from presidio_analyzer import AnalyzerEngine; print('presidio ok')"
 
 ENV HF_HOME=/data/ml/huggingface \
     TRANSFORMERS_CACHE=/data/ml/huggingface

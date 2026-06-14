@@ -2,6 +2,10 @@
 
 -r requirements-base.txt
 
+# Camada de segurança/privacidade (Presidio + guardrails). Ver requirements-security.txt.
+
+-r requirements-security.txt
+
 # Multiagentes — CrewAI 1.14+ com extra openai (OpenRouter é OpenAI-compatible).
 
 # Hoje só usado para o builder em ``agents/llm.py`` (reservado); o pipeline custom
