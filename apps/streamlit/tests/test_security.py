@@ -31,7 +31,16 @@ _spec.loader.exec_module(_security)  # type: ignore[union-attr]
 anonymize_pii = _security.anonymize_pii
 sanitize_model_output = _security.sanitize_model_output
 scan_user_input = _security.scan_user_input
+scan_secrets = _security.scan_secrets
 _is_source_line = _security._is_source_line
+
+
+def _detect_secrets_available() -> bool:
+    try:
+        import detect_secrets  # noqa: F401
+    except Exception:
+        return False
+    return True
 
 
 class InputGuardTests(unittest.TestCase):
@@ -84,6 +93,70 @@ class InputGuardTests(unittest.TestCase):
         finally:
             os.environ.pop("SECURITY_INPUT_GUARD_ENABLED", None)
 
+    def test_blocks_message_with_aws_key(self) -> None:
+        if not _detect_secrets_available():
+            self.skipTest("detect-secrets não instalado neste ambiente")
+        res = scan_user_input(
+            "Esqueci de remover do código: AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE"
+        )
+        self.assertFalse(res.allowed)
+        self.assertIn("secrets", res.triggered)
+
+
+class SecretsScanTests(unittest.TestCase):
+    """Detecção de credenciais técnicas (AWS, Slack, JWT, chave privada...) via detect-secrets."""
+
+    def test_detects_aws_key(self) -> None:
+        if not _detect_secrets_available():
+            self.skipTest("detect-secrets não instalado neste ambiente")
+        res = scan_secrets("AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE")
+        self.assertTrue(res.found)
+        self.assertNotIn("AKIAIOSFODNN7EXAMPLE", res.text)
+
+    def test_detects_slack_token(self) -> None:
+        if not _detect_secrets_available():
+            self.skipTest("detect-secrets não instalado neste ambiente")
+        res = scan_secrets("SLACK_BOT_TOKEN=xoxb-REDACTED-FAKE-TOKEN-FOR-TESTING")
+        self.assertTrue(res.found)
+        self.assertNotIn("xoxb-REDACTED-FAKE-TOKEN-FOR-TESTING", res.text)
+
+    def test_detects_jwt(self) -> None:
+        if not _detect_secrets_available():
+            self.skipTest("detect-secrets não instalado neste ambiente")
+        jwt = (
+            "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
+            "eyJzdWIiOiIxMjM0NTY3ODkwIn0."
+            "dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
+        )
+        res = scan_secrets(f"Authorization: Bearer {jwt}")
+        self.assertTrue(res.found)
+        self.assertNotIn(jwt, res.text)
+
+    def test_no_false_positive_on_lab_questions(self) -> None:
+        if not _detect_secrets_available():
+            self.skipTest("detect-secrets não instalado neste ambiente")
+        questions = [
+            "Qual o lote do reagente ELISA do projeto 252?",
+            "Liste o fabricante, validade e número de lote de todos os kits "
+            "utilizados no ensaio de Chikungunya realizado em março de 2024.",
+            "Compare os resultados de absorbância entre os projetos 252 e 253 "
+            "considerando a validade dos reagentes.",
+        ]
+        for q in questions:
+            res = scan_secrets(q)
+            self.assertFalse(res.found, f"falso positivo em: {q!r}")
+            self.assertEqual(res.text, q)
+
+    def test_disabled_returns_original(self) -> None:
+        os.environ["SECURITY_SECRETS_GUARD_ENABLED"] = "0"
+        try:
+            text = "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE"
+            res = scan_secrets(text)
+            self.assertEqual(res.text, text)
+            self.assertFalse(res.found)
+        finally:
+            os.environ.pop("SECURITY_SECRETS_GUARD_ENABLED", None)
+
 
 class OutputSanitizationTests(unittest.TestCase):
     def test_neutralizes_markdown_image_exfiltration(self) -> None:
@@ -117,6 +190,17 @@ class OutputSanitizationTests(unittest.TestCase):
         res = sanitize_model_output(text)
         self.assertEqual(res.text, text)
         self.assertEqual(res.neutralized, [])
+
+    def test_redacts_leaked_secret(self) -> None:
+        if not _detect_secrets_available():
+            self.skipTest("detect-secrets não instalado neste ambiente")
+        text = (
+            "De acordo com o documento interno, o token usado era "
+            "SLACK_BOT_TOKEN=xoxb-REDACTED-FAKE-TOKEN-FOR-TESTING."
+        )
+        res = sanitize_model_output(text)
+        self.assertIn("secrets", res.neutralized)
+        self.assertNotIn("xoxb-REDACTED-FAKE-TOKEN-FOR-TESTING", res.text)
 
 
 class SourceLineDetectionTests(unittest.TestCase):

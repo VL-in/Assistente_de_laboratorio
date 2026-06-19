@@ -147,15 +147,24 @@ System prompt: combinação de `CHAT_SYSTEM_PROMPT` (geral) + `CHAT_ML_SYSTEM_PR
 
 ### 3.8 Camada de segurança (`agents/security.py`)
 
-Implementa as tratativas P1-1..P1-4 do relatório de segurança e o requisito do RDD (PII/segredos não vazam). Três pontos de controle, todos configuráveis por env (`SECURITY_*`):
+Implementa as tratativas P1-1..P1-4 do relatório de segurança e o requisito do RDD (PII/segredos não vazam). Pontos de controle, todos configuráveis por env (`SECURITY_*`):
 
 | Controle | Onde roda | Biblioteca | Mitiga (relatório) |
 | -------- | --------- | ---------- | ------------------ |
 | `scan_user_input` | Antes do Greeter (em `app.py`) | LLM Guard + heurística regex | 1.3 prompt-injection, 2.6 eco de prompt, 1.5 mensagem gigante |
 | `anonymize_messages_for_external` | Antes do `create_chat_completion` | **Presidio** (PT+EN, spaCy *small*, +CPF/CNPJ) | 1.4 dado→OpenRouter, 2.4 trace→Langfuse |
 | `sanitize_model_output` | Antes do `st.markdown` | LLM Guard + heurística regex | 2.3 exfiltração via markdown/HTML |
+| `scan_secrets` | Dentro de `scan_user_input` (bloqueia) e `sanitize_model_output` (redige) | **detect-secrets** (Yelp) | credenciais técnicas (chave de API AWS/GitHub/Slack/Stripe, chave privada, JWT) coladas pelo usuário ou ecoadas de documentos |
 
 **Política de fronteira:** a anonimização de PII é aplicada **só na borda externa**. A resposta renderizada ao usuário autenticado permanece íntegra (ele precisa ver lote/validade/nomes); apenas o prompt que vai ao provedor remoto e o trace do Langfuse são anonimizados.
+
+**Segredos técnicos (`scan_secrets`):** complementar ao Presidio — Presidio cobre PII de pessoa física, `scan_secrets` cobre credenciais técnicas (AWS/GitHub/Slack/Stripe/JWT/chaves privadas) via `detect-secrets`, mesmo motor do scanner `Secrets` do LLM Guard. Roda em DUAS pontas:
+- **Entrada** (`scan_user_input`): se a mensagem do usuário contém um segredo (ex.: colou um trecho de `.env`), a mensagem é **bloqueada** antes do Triage — zero tokens gastos, o segredo nunca sai para o LLM remoto.
+- **Saída** (`sanitize_model_output`): se um documento indexado no RAG contiver um segredo esquecido e o LLM o ecoar na resposta, o trecho é **redigido** (mostra só os 2 primeiros/últimos caracteres) antes de `st.markdown` — a resposta segue normalmente, sem bloquear.
+
+Controlado por `SECURITY_SECRETS_GUARD_ENABLED` (default `1`). Dependência: `detect-secrets` puro (sem o pacote `llm-guard`, que arrasta `sentencepiece`/transformers e não permite customizar a lista de plugins). A allowlist `_SECRETS_PLUGINS` (`security.py`) usa só detectores de PADRÃO específico (AWS, GitHub, Slack, Stripe, JWT, chave privada...), **excluindo** `Base64HighEntropyString`/`HexHighEntropyString` — esses dois classificam palavras comuns em PT-BR ("ELISA", "lote", "Chikungunya") como "segredo de alta entropia" e bloqueariam toda mensagem normal.
+
+**Limitação conhecida:** segredos no formato `VARIAVEL=valor` sem aspas (ex.: colar um `.env` cru com `OPENROUTER_API_KEY=sk-or-v1-...`) só são detectados se o provedor tiver um detector de padrão dedicado (AWS/Slack/Stripe/GitHub/JWT cobrem isso pelo formato do valor). Chaves sem padrão conhecido (ex.: OpenRouter) só são pegas pelo `KeywordDetector`, que exige aspas (`KEY="valor"`). Tradeoff aceito para evitar falso-positivo via entropia.
 
 **Preservação da fonte (RDD:13):** a anonimização roda linha-a-linha com `preserve_source_lines=True`. As linhas que carregam a fonte da evidência (`### Evidência [N] — Projeto: … · Arquivo: …`, o prefixo `[Projeto: …] [Arquivo: …]` e as colunas `_project_id`/`_source_file` do OLAP) passam **íntegras** — sem isso, nomes de arquivo como `protocolo_Dra_Silva_2024.docx` seriam redigidos e a rastreabilidade/citação quebraria.
 

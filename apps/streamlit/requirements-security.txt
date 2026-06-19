@@ -21,5 +21,21 @@ spacy>=3.7.0,<4.0.0
 # A proteção principal de entrada/saída (prompt-injection, anti-exfiltração
 # markdown) já é feita por heurística regex em agents/security.py e NÃO exige
 # esta dependência. Descomente para ativar os scanners adicionais do LLM Guard
-# (TokenLimit, MaliciousURLs); aumenta o tamanho da imagem (transformers).
+# (TokenLimit, MaliciousURLs); aumenta o tamanho da imagem (transformers,
+# sentencepiece — sem wheel pré-compilado para Windows/Python 3.13).
 # llm-guard>=0.3.0,<1.0.0
+
+# ── Segredos técnicos (detect-secrets, Yelp) ─────────────────────────────────
+# OBRIGATÓRIA: detecta tokens de API/AWS/Slack/Stripe/OpenAI..., chaves
+# privadas e JWT coladas pelo usuário ou ecoadas de documentos indexados — ver
+# agents/security.py (scan_secrets, usado em scan_user_input e
+# sanitize_model_output) e https://protectai.github.io/llm-guard/input_scanners/secrets/
+#
+# Usamos `detect-secrets` DIRETO (sem o pacote `llm-guard`, que arrasta
+# `sentencepiece`/transformers e não permite customizar os plugins) com uma
+# allowlist de detectores que EXCLUI `Base64HighEntropyString` /
+# `HexHighEntropyString` — esses dois geram falso-positivo em praticamente
+# qualquer palavra comum (ex.: "ELISA", "lote", "Chikungunya" são
+# erroneamente classificados como "Base64 High Entropy String"), o que
+# bloquearia toda mensagem normal do laboratório.
+detect-secrets>=1.4.0,<2.0.0

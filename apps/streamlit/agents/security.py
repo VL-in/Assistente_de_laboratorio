@@ -7,16 +7,28 @@ Implementa as tratativas P1-1, P1-2, P1-3 e P1-4 do relatório de segurança
 requisito do RDD (`logs/ReadmeDrivenDev.md/RDD_RAG.md`) de que **PII/NER e
 segredos industriais não podem vazar**.
 
-Duas bibliotecas externas, em camadas distintas:
+Três bibliotecas externas, em camadas distintas:
 
 - **LLM Guard** (https://github.com/protectai/llm-guard) — guardrails de
   prompt-injection/jailbreak na ENTRADA e neutralização de exfiltração via
   markdown na SAÍDA.
 - **Microsoft Presidio** (https://github.com/microsoft/presidio) — detecção e
-  anonimização de PII (CPF, e-mail, telefone, pessoa, etc.) na **borda
-  externa**: tudo que sai do perímetro (OpenRouter, Langfuse) é anonimizado;
-  a resposta renderizada ao usuário autenticado permanece íntegra (decisão de
-  política: redação só na borda externa).
+  anonimização de PII de PESSOA FÍSICA (CPF, e-mail, telefone, pessoa, etc.)
+  na **borda externa**: tudo que sai do perímetro (OpenRouter, Langfuse) é
+  anonimizado; a resposta renderizada ao usuário autenticado permanece íntegra
+  (decisão de política: redação só na borda externa).
+- **detect-secrets** (https://github.com/Yelp/detect-secrets) — detecção de
+  CREDENCIAIS TÉCNICAS (chaves de API AWS/GitHub/Slack/Stripe..., chaves
+  privadas, JWT) em AMBAS as pontas (entrada bloqueia, saída redige). É o
+  mesmo motor do scanner ``Secrets`` do LLM Guard
+  (https://protectai.github.io/llm-guard/input_scanners/secrets/), usado
+  diretamente (sem o pacote ``llm-guard``) com uma allowlist de plugins que
+  exclui os detectores de entropia genérica — ver seção 4 / ``scan_secrets``
+  para o porquê.
+
+O scanner de segredos é complementar ao Presidio: Presidio cobre dados
+pessoais; ``scan_secrets`` cobre credenciais técnicas — coladas pelo usuário
+(ex.: trecho de ``.env``) ou ecoadas de documentos indexados no RAG.
 
 Política de fronteira (decisão registrada com a usuária)
 --------------------------------------------------------
@@ -26,15 +38,18 @@ OpenRouter            ◄─[PII anonimizada]── prompt + contexto
 Langfuse (se ativo)   ◄─[PII anonimizada]── trace
 ```
 
-Dependências obrigatórias (sem bypass silencioso), porém enxutas: usamos os
-modelos spaCy *small* e, no LLM Guard, scanners leves baseados em
-regex/heurística — evitando os scanners pesados baseados em transformers.
+Dependências obrigatórias (sem bypass silencioso), porém enxutas: modelos
+spaCy *small* (Presidio) e ``detect-secrets`` puro (sem LLM Guard/
+transformers/sentencepiece) — tudo baseado em regex/heurística, sem modelos
+pesados.
 
 Configuração por ambiente
 -------------------------
 - ``SECURITY_INPUT_GUARD_ENABLED`` (default ``1``) — guardrails de entrada.
 - ``SECURITY_OUTPUT_GUARD_ENABLED`` (default ``1``) — sanitização de saída.
 - ``SECURITY_PII_REDACTION_ENABLED`` (default ``1``) — anonimização na borda.
+- ``SECURITY_SECRETS_GUARD_ENABLED`` (default ``1``) — detecção de segredos
+  técnicos (detect-secrets) na entrada (bloqueia) e na saída (redige).
 - ``SECURITY_MAX_INPUT_CHARS`` (default ``4000``) — limite da mensagem do usuário.
 - ``SECURITY_PII_LANGUAGES`` (default ``pt,en``) — idiomas do Presidio.
 - ``SECURITY_ALLOWED_LINK_DOMAINS`` (default vazio) — domínios permitidos em
@@ -119,6 +134,10 @@ def allowed_link_domains() -> set[str]:
     return {s.strip().lower() for s in raw.split(",") if s.strip()}
 
 
+def secrets_guard_enabled() -> bool:
+    return _env_flag("SECURITY_SECRETS_GUARD_ENABLED")
+
+
 # ── Resultados ───────────────────────────────────────────────────────────────
 
 
@@ -142,6 +161,14 @@ class PiiResult:
     @property
     def redacted(self) -> bool:
         return bool(self.entities)
+
+
+@dataclass
+class SecretsResult:
+    """Texto com segredos técnicos redigidos (chaves de API, tokens, etc.)."""
+
+    text: str
+    found: bool = False
 
 
 # ── 1) Guardrail de entrada (LLM Guard + heurística) ─────────────────────────
@@ -273,6 +300,21 @@ def scan_user_input(text: str) -> InputGuardResult:
                 "Reduza o tamanho e reformule a pergunta."
             ),
             triggered=triggered,
+        )
+
+    # Segredos técnicos (chaves de API, tokens, chaves privadas...) coladas por
+    # engano: bloqueia ANTES do Triage para o segredo nunca saber ao LLM remoto.
+    secrets_result = scan_secrets(sanitized)
+    if secrets_result.found:
+        return InputGuardResult(
+            allowed=False,
+            sanitized_text=secrets_result.text,
+            reason=(
+                "Sua mensagem foi bloqueada porque parece conter um segredo "
+                "técnico (ex.: chave de API, token ou chave privada). Remova "
+                "o segredo e reenvie a pergunta."
+            ),
+            triggered=["secrets"],
         )
 
     return InputGuardResult(allowed=True, sanitized_text=sanitized)
@@ -533,6 +575,14 @@ def sanitize_model_output(text: str) -> OutputGuardResult:
         except Exception as exc:  # noqa: BLE001
             logger.warning("Scanner de saída %s falhou: %s", type(scanner).__name__, exc)
 
+    # Segredos técnicos ecoados de documentos indexados (ex.: chave de API
+    # esquecida num .docx/.xlsx): redige antes de renderizar, sem bloquear a
+    # resposta inteira.
+    secrets_result = scan_secrets(out)
+    if secrets_result.found:
+        neutralized.append("secrets")
+        out = secrets_result.text
+
     return OutputGuardResult(text=out, neutralized=neutralized)
 
 
@@ -549,3 +599,104 @@ def _llm_guard_output_scanners():
     except Exception as exc:  # noqa: BLE001
         logger.info("LLM Guard MaliciousURLs indisponível (usando heurística regex): %s", exc)
     return scanners
+
+
+# ── 4) Detecção de segredos técnicos (detect-secrets) ────────────────────────
+#
+# Complementa a redação de PII (Presidio, seção 2): enquanto o Presidio cobre
+# dados de PESSOA FÍSICA (CPF, e-mail, telefone...), esta seção cobre
+# CREDENCIAIS TÉCNICAS — chaves de API (AWS, GitHub, Slack, Stripe...), chaves
+# privadas e JWT — via ``detect-secrets`` (Yelp), o mesmo motor usado pelo
+# scanner ``Secrets`` do LLM Guard
+# (https://protectai.github.io/llm-guard/input_scanners/secrets/). Usamos
+# ``detect-secrets`` DIRETO em vez do pacote ``llm-guard``: o construtor do
+# scanner ``Secrets`` do LLM Guard não permite customizar os plugins, e sua
+# config padrão inclui ``Base64HighEntropyString``/``HexHighEntropyString``,
+# que classificam palavras comuns em PT-BR ("ELISA", "lote", "Chikungunya")
+# como "segredo de alta entropia" — bloquearia toda mensagem normal do chat.
+#
+# Allowlist de plugins (``_SECRETS_PLUGINS``): todos os detectores de PADRÃO
+# específico do ``detect-secrets`` (prefixo/formato conhecido de credencial),
+# SEM os dois detectores de entropia genérica.
+#
+# Aplicado em DUAS pontas:
+# - ENTRADA (``scan_user_input``): se o usuário colar um segredo (ex.: por
+#   engano, um trecho de ``.env``), a mensagem é bloqueada ANTES do Triage —
+#   o segredo nunca chega a sair para o LLM remoto.
+# - SAÍDA (``sanitize_model_output``): se um documento indexado no RAG contiver
+#   um segredo esquecido e o LLM o ecoar na resposta, o trecho é redigido antes
+#   de ``st.markdown``.
+
+_SECRETS_PLUGINS: tuple[dict[str, str], ...] = (
+    {"name": "ArtifactoryDetector"},
+    {"name": "AWSKeyDetector"},
+    {"name": "AzureStorageKeyDetector"},
+    {"name": "BasicAuthDetector"},
+    {"name": "CloudantDetector"},
+    {"name": "DiscordBotTokenDetector"},
+    {"name": "GitHubTokenDetector"},
+    {"name": "IbmCloudIamDetector"},
+    {"name": "IbmCosHmacDetector"},
+    {"name": "JwtTokenDetector"},
+    {"name": "MailchimpDetector"},
+    {"name": "NpmDetector"},
+    {"name": "PrivateKeyDetector"},
+    {"name": "SendGridDetector"},
+    {"name": "SlackDetector"},
+    {"name": "SoftlayerDetector"},
+    {"name": "SquareOAuthDetector"},
+    {"name": "StripeDetector"},
+    {"name": "TwilioKeyDetector"},
+    {"name": "KeywordDetector"},
+)
+
+
+def _redact_partial(value: str) -> str:
+    """Mostra só os 2 primeiros/últimos caracteres — mesma convenção do LLM Guard ``REDACT_PARTIAL``."""
+    if len(value) <= 4:
+        return "****"
+    return f"{value[:2]}..{value[-2:]}"
+
+
+def scan_secrets(text: str) -> SecretsResult:
+    """
+    Detecta e redige segredos técnicos (chaves de API, tokens, chaves
+    privadas, JWT...) em ``text`` usando ``detect-secrets`` com
+    ``_SECRETS_PLUGINS`` (sem detectores de entropia genérica).
+
+    Quando ``found=True``, ``text`` já vem com os segredos parcialmente
+    mascarados (2 primeiros/últimos caracteres) — o chamador decide se
+    bloqueia a mensagem (entrada) ou apenas usa o texto redigido (saída).
+
+    Se ``detect-secrets`` estiver indisponível (dependência não instalada) ou
+    ``SECURITY_SECRETS_GUARD_ENABLED=0``, devolve o texto original sem
+    alteração — registrando um aviso no log.
+    """
+    raw = text or ""
+    if not secrets_guard_enabled() or not raw.strip():
+        return SecretsResult(text=raw)
+
+    try:
+        from detect_secrets.core.scan import scan_line
+        from detect_secrets.settings import transient_settings
+    except Exception as exc:  # noqa: BLE001
+        logger.error("detect-secrets indisponível — segredos NÃO verificados: %s", exc)
+        return SecretsResult(text=raw)
+
+    try:
+        out_lines: list[str] = []
+        found = False
+        with transient_settings({"plugins_used": list(_SECRETS_PLUGINS)}):
+            for line in raw.split("\n"):
+                results = list(scan_line(line)) if line.strip() else []
+                for result in results:
+                    if not result.secret_value:
+                        continue
+                    found = True
+                    line = line.replace(result.secret_value, _redact_partial(result.secret_value))
+                out_lines.append(line)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Scanner de segredos falhou: %s", exc)
+        return SecretsResult(text=raw)
+
+    return SecretsResult(text="\n".join(out_lines), found=found)
