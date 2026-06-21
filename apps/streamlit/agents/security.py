@@ -54,6 +54,9 @@ Configuração por ambiente
 - ``SECURITY_PII_LANGUAGES`` (default ``pt,en``) — idiomas do Presidio.
 - ``SECURITY_ALLOWED_LINK_DOMAINS`` (default vazio) — domínios permitidos em
   links/imagens markdown da saída (qualquer outro é neutralizado).
+- ``SECURITY_BAN_CODE_ENABLED`` (default ``1``) — bloqueia mensagens de entrada
+  que contenham blocos de código ou scripts (BanCode). Não aplicado na saída:
+  o Synthesizer pode incluir fragmentos SQL/código como parte da rastreabilidade.
 """
 
 from __future__ import annotations
@@ -138,6 +141,10 @@ def secrets_guard_enabled() -> bool:
     return _env_flag("SECURITY_SECRETS_GUARD_ENABLED")
 
 
+def ban_code_enabled() -> bool:
+    return _env_flag("SECURITY_BAN_CODE_ENABLED")
+
+
 # ── Resultados ───────────────────────────────────────────────────────────────
 
 
@@ -169,6 +176,97 @@ class SecretsResult:
 
     text: str
     found: bool = False
+
+
+# ── 0) BanCode — bloqueio de código na entrada ───────────────────────────────
+#
+# Usuários legítimos de laboratório não precisam enviar código-fonte. A presença
+# de blocos de código é um forte indicador de prompt-injection estruturado,
+# tentativa de execução remota ou abuso da interface.
+#
+# Aplicado SOMENTE na entrada. A saída não é filtrada: o Synthesizer pode citar
+# fragmentos SQL gerados pelo OLAP tool como rastreabilidade — bloquear a saída
+# quebraria funcionalidade legítima.
+
+# Bloco de código markdown: ```lang ... ``` (com ou sem nome de linguagem).
+_CODE_FENCE = re.compile(r"```[\s\S]{0,10000}?```", re.DOTALL)
+
+# Padrões inline que identificam código de linguagens comuns sem fence.
+_CODE_INLINE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "shebang",
+        re.compile(r"^#!\s*/(?:usr/bin|bin)/(?:env\s+)?(?:python\d*|bash|sh|zsh|node|perl|ruby)\b", re.MULTILINE),
+    ),
+    (
+        "python_import",
+        re.compile(r"^\s*(?:import\s+\w[\w.,\s]*|from\s+\w[\w.]*\s+import\b)", re.MULTILINE),
+    ),
+    (
+        "python_def_class",
+        re.compile(r"^\s*(?:def\s+\w+\s*\(|class\s+\w+[\s:(])", re.MULTILINE),
+    ),
+    (
+        "js_function",
+        re.compile(r"\bfunction\s+\w+\s*\(", re.IGNORECASE),
+    ),
+    (
+        "bash_command",
+        re.compile(r"(?:^|\s)(?:sudo|chmod|chown|curl|wget|nc\s|bash\s+-[ci]|sh\s+-[ci]|eval\s+)\s+\S", re.MULTILINE | re.IGNORECASE),
+    ),
+    (
+        "script_tag",
+        re.compile(r"<\s*script\b", re.IGNORECASE),
+    ),
+    (
+        "sql_statement",
+        re.compile(
+            r"\b(?:SELECT\s+.+?\s+FROM|INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM|DROP\s+(?:TABLE|DATABASE)|CREATE\s+(?:TABLE|DATABASE|INDEX))\b",
+            re.IGNORECASE | re.DOTALL,
+        ),
+    ),
+)
+
+
+def scan_code_input(text: str) -> InputGuardResult:
+    """
+    Bloqueia mensagens de entrada que contenham código-fonte ou scripts.
+
+    Detecta blocos de código markdown (```...```) e padrões inline de linguagens
+    comuns (Python, JS, bash, SQL, shebang). Retorna ``allowed=False`` se
+    encontrar código; o chamador exibe ``reason`` sem chamar o LLM.
+
+    Quando ``SECURITY_BAN_CODE_ENABLED=0``, devolve ``allowed=True`` sem inspeção.
+    """
+    raw = text or ""
+    if not ban_code_enabled():
+        return InputGuardResult(allowed=True, sanitized_text=raw)
+
+    if _CODE_FENCE.search(raw):
+        return InputGuardResult(
+            allowed=False,
+            sanitized_text=raw,
+            reason=(
+                "Sua mensagem contém um bloco de código, que não é esperado em "
+                "consultas ao assistente de laboratório. Descreva sua dúvida em "
+                "linguagem natural e reenvie."
+            ),
+            triggered=["ban_code_fence"],
+        )
+
+    for name, pattern in _CODE_INLINE_PATTERNS:
+        if pattern.search(raw):
+            return InputGuardResult(
+                allowed=False,
+                sanitized_text=raw,
+                reason=(
+                    "Sua mensagem parece conter código ou comandos de sistema, "
+                    "o que não é permitido nesta interface. Reformule a pergunta "
+                    "descrevendo o que deseja saber sobre os dados do laboratório."
+                ),
+                triggered=[f"ban_code_{name}"],
+            )
+
+    return InputGuardResult(allowed=True, sanitized_text=raw)
 
 
 # ── 1) Guardrail de entrada (LLM Guard + heurística) ─────────────────────────
@@ -300,6 +398,18 @@ def scan_user_input(text: str) -> InputGuardResult:
                 "Reduza o tamanho e reformule a pergunta."
             ),
             triggered=triggered,
+        )
+
+    # Código-fonte / scripts na entrada: usuários de laboratório nunca precisam
+    # enviar código. Bloqueia antes do Triage para evitar prompt-injection
+    # estruturado e execução remota induzida.
+    code_result = scan_code_input(sanitized)
+    if not code_result.allowed:
+        return InputGuardResult(
+            allowed=False,
+            sanitized_text=sanitized,
+            reason=code_result.reason,
+            triggered=code_result.triggered,
         )
 
     # Segredos técnicos (chaves de API, tokens, chaves privadas...) coladas por

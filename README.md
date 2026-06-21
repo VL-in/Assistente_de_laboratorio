@@ -203,6 +203,7 @@ Implementada em [`agents/security.py`](apps/streamlit/agents/security.py). Três
 
 | Componente | Biblioteca | Onde atua | O que faz |
 |------------|-----------|-----------|-----------|
+| **BanCode** | regex | Antes do Greeter | Bloqueia mensagens com blocos de código ou scripts (Python, bash, SQL, JS…) |
 | **Guardrail de entrada** | regex + heurística | Antes do Greeter | Bloqueia prompt injection, jailbreak e mensagens acima de 4.000 chars |
 | **Detecção de segredos (entrada)** | detect-secrets | Antes do Triage | Bloqueia mensagens com chaves de API, tokens, JWT |
 | **Detecção de segredos (saída)** | detect-secrets | Após o LLM | Redige credenciais que possam ter sido ecoadas de documentos indexados |
@@ -223,6 +224,7 @@ A anonimização acontece **apenas na borda externa**: o usuário autenticado v�
 
 | Variável | Padrão | Efeito |
 |----------|:------:|--------|
+| `SECURITY_BAN_CODE_ENABLED` | `1` | BanCode na entrada (bloqueia código/scripts) |
 | `SECURITY_INPUT_GUARD_ENABLED` | `1` | Guardrail de entrada |
 | `SECURITY_OUTPUT_GUARD_ENABLED` | `1` | Sanitização de saída |
 | `SECURITY_PII_REDACTION_ENABLED` | `1` | Anonimização na borda externa |
@@ -388,6 +390,7 @@ Tags automáticas: `feature:chat`, `route:rag`, `route:olap`, `route:ml` conform
 | `LANGFUSE_PUBLIC_KEY` | Contêiner | Chave pública do projeto Langfuse |
 | `LANGFUSE_SECRET_KEY` | Contêiner | Chave secreta do projeto Langfuse |
 | `LANGFUSE_BASE_URL` | Contêiner | API Langfuse (padrão `https://cloud.langfuse.com`) |
+| `SECURITY_BAN_CODE_ENABLED` | Contêiner | BanCode na entrada — bloqueia código/scripts (padrão `1`) |
 | `SECURITY_INPUT_GUARD_ENABLED` | Contêiner | Guardrail de entrada (padrão `1`) |
 | `SECURITY_OUTPUT_GUARD_ENABLED` | Contêiner | Sanitização de saída (padrão `1`) |
 | `SECURITY_PII_REDACTION_ENABLED` | Contêiner | Anonimização PII na borda externa (padrão `1`) |
