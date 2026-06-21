@@ -57,6 +57,20 @@ Configuração por ambiente
 - ``SECURITY_BAN_CODE_ENABLED`` (default ``1``) — bloqueia mensagens de entrada
   que contenham blocos de código ou scripts (BanCode). Não aplicado na saída:
   o Synthesizer pode incluir fragmentos SQL/código como parte da rastreabilidade.
+- ``SECURITY_TOXICITY_ENABLED`` (default ``1``) — detecção de linguagem tóxica/
+  ofensiva. Na **entrada**: bloqueia mensagens com conteúdo explicitamente
+  ofensivo antes do Triage (zero tokens gastos). Na **saída**: registra aviso de
+  auditoria e marca ``neutralized``, mas **não bloqueia** a resposta — modelos
+  alinhados raramente produzem toxicidade espontânea no domínio de laboratório, e
+  bloquear a resposta inteira por um termo isolado é pior UX do que deixar passar.
+  Camada primária: lista de termos PT-BR + EN curada (rápida, sem dependências).
+  Camada secundária opt-in: modelo ``unitary/toxic-bert`` via ``transformers``
+  quando instalado (degrada graciosamente caso indisponível, igual aos demais
+  scanners).
+- ``SECURITY_TOXICITY_MODEL`` (default ``unitary/toxic-bert``) — modelo HuggingFace
+  para detecção de toxicidade (usado apenas se ``transformers`` estiver instalado).
+- ``SECURITY_TOXICITY_THRESHOLD`` (default ``0.7``) — score mínimo do modelo para
+  classificar como tóxico (0.0–1.0).
 """
 
 from __future__ import annotations
@@ -145,6 +159,22 @@ def ban_code_enabled() -> bool:
     return _env_flag("SECURITY_BAN_CODE_ENABLED")
 
 
+def toxicity_enabled() -> bool:
+    return _env_flag("SECURITY_TOXICITY_ENABLED")
+
+
+def toxicity_model_id() -> str:
+    return os.environ.get("SECURITY_TOXICITY_MODEL", "unitary/toxic-bert").strip()
+
+
+def toxicity_threshold() -> float:
+    try:
+        v = float(os.environ.get("SECURITY_TOXICITY_THRESHOLD", "0.7"))
+        return max(0.0, min(1.0, v))
+    except (TypeError, ValueError):
+        return 0.7
+
+
 # ── Resultados ───────────────────────────────────────────────────────────────
 
 
@@ -176,6 +206,15 @@ class SecretsResult:
 
     text: str
     found: bool = False
+
+
+@dataclass
+class ToxicityResult:
+    """Veredito do scanner de toxicidade sobre um texto."""
+
+    toxic: bool
+    score: float = 0.0
+    layer: str = ""
 
 
 # ── 0) BanCode — bloqueio de código na entrada ───────────────────────────────
@@ -410,6 +449,21 @@ def scan_user_input(text: str) -> InputGuardResult:
             sanitized_text=sanitized,
             reason=code_result.reason,
             triggered=code_result.triggered,
+        )
+
+    # Linguagem tóxica/ofensiva do usuário: bloqueia antes do Triage para não
+    # expor o conteúdo ao LLM remoto e proteger o ambiente de trabalho.
+    toxicity_result = scan_toxicity(sanitized)
+    if toxicity_result.toxic:
+        return InputGuardResult(
+            allowed=False,
+            sanitized_text=sanitized,
+            reason=(
+                "Sua mensagem foi bloqueada por conter linguagem inadequada. "
+                "Reformule a pergunta de forma respeitosa focando nos dados "
+                "do laboratório."
+            ),
+            triggered=[f"toxicity:{toxicity_result.layer}"],
         )
 
     # Segredos técnicos (chaves de API, tokens, chaves privadas...) coladas por
@@ -693,6 +747,20 @@ def sanitize_model_output(text: str) -> OutputGuardResult:
         neutralized.append("secrets")
         out = secrets_result.text
 
+    # Toxicidade na saída: registra aviso e marca auditoria, mas NÃO bloqueia.
+    # Modelos alinhados raramente produzem toxicidade espontânea no domínio de
+    # laboratório; bloquear a resposta inteira seria pior UX do que registrar.
+    # O operador pode escalar para bloqueio inspecionando ``neutralized``.
+    toxicity_result = scan_toxicity(out)
+    if toxicity_result.toxic:
+        logger.warning(
+            "Toxicidade detectada na saída do modelo (layer=%s, score=%.2f) — "
+            "resposta entregue ao usuário mas marcada para auditoria.",
+            toxicity_result.layer,
+            toxicity_result.score,
+        )
+        neutralized.append(f"toxicity:{toxicity_result.layer}")
+
     return OutputGuardResult(text=out, neutralized=neutralized)
 
 
@@ -810,3 +878,129 @@ def scan_secrets(text: str) -> SecretsResult:
         return SecretsResult(text=raw)
 
     return SecretsResult(text="\n".join(out_lines), found=found)
+
+
+# ── 5) Detecção de toxicidade (Toxicity) ─────────────────────────────────────
+#
+# Detecta linguagem ofensiva, ódio ou conteúdo inadequado nas mensagens do
+# usuário (ENTRADA) e na resposta do LLM (SAÍDA).
+#
+# Política diferenciada por ponta:
+# - ENTRADA: bloqueia — uma mensagem ofensiva do usuário não deve chegar ao LLM
+#   (zero tokens, zero custo). Protege o ambiente de trabalho.
+# - SAÍDA: registra aviso de auditoria e marca ``neutralized``, mas NÃO bloqueia
+#   a resposta. Justificativa:
+#   (a) modelos alinhados raramente produzem toxicidade espontânea no domínio de
+#       laboratório;
+#   (b) o risco real é baixo — um documento indexado precisaria conter conteúdo
+#       tóxico E o LLM precisaria ecoá-lo verbatim;
+#   (c) bloquear a resposta inteira por um termo isolado é pior UX do que deixar
+#       passar e registrar para auditoria;
+#   (d) o operador pode escalar para bloqueio adicionando lógica no chamador com
+#       base em ``neutralized``.
+#
+# Implementação em duas camadas, por ordem de custo crescente:
+#
+# Camada 1 — lista de termos PT-BR + EN (regex, sem dependências extras):
+#   Cobertura focada em linguagem ofensiva que nunca aparece em perguntas legítimas
+#   de laboratório. Lista propositalmente enxuta: falso-positivo em contexto
+#   técnico é mais prejudicial do que falso-negativo aqui.
+#
+# Camada 2 — modelo ``unitary/toxic-bert`` via ``transformers`` (opt-in):
+#   Ativada automaticamente quando o pacote ``transformers`` está instalado.
+#   Usa pipeline de text-classification; o modelo é baixado na primeira chamada
+#   (cache HuggingFace padrão). Se indisponível, degrada para a camada 1.
+#   Configurável via ``SECURITY_TOXICITY_MODEL`` e ``SECURITY_TOXICITY_THRESHOLD``.
+#
+# Referência: https://protectai.github.io/llm-guard/input_scanners/toxicity/
+
+# Termos que caracterizam linguagem ofensiva explícita e nunca aparecem em
+# perguntas legítimas de laboratório (PT-BR e EN). Cobertura mínima intencional:
+# o modelo (camada 2) cobre os casos sutis; aqui só os inequívocos.
+_TOXICITY_TERMS = re.compile(
+    r"\b(?:"
+    # PT-BR
+    r"fdp|viado|puta(?:\s+que|s\b)|filho\s+da\s+puta|cuzão|arrombado|"
+    r"vá\s+se\s+foder|vai\s+se\s+foder|seus?\s+merda|sua\s+merda|merda|"
+    r"idiota|imbecil|retardado|cretino|inútil(?:\s+inútil)?|"
+    r"lixo\s+humano|se\s+mata|matar-?se|"
+    r"estúpido|burro\s+de\s+merda|otário|imbecil|poha|bosta|buceta|cocô|xoxota|porra|caralho|cu|pau\s+no\s+cu|vai\s+pro\s+inferno|desgraçado|desgraça|"
+    r"bicha|crl|krl|cacete|k7|kacete|tnc|fudido|fodase|foda-?se|fuder|fudendo|fudeu|fodendo|fodeu|vai\s+se\s+foder|"
+    # EN
+    r"fuck\s+you|fucking\s+idiot|go\s+fuck|piece\s+of\s+shit|"
+    r"kill\s+yourself|kys\b|you\s+stupid|dumb\s+ass|piece\s+of\s+crap|"
+    r"hate\s+speech|n[i1]gg[ae]r|f[a4]gg[o0]t"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+@lru_cache(maxsize=1)
+def _toxicity_classifier():
+    """
+    Carrega o pipeline de classificação de toxicidade do HuggingFace uma única
+    vez. Retorna ``None`` se ``transformers`` não estiver instalado — a camada
+    regex continua ativa.
+    """
+    try:
+        from transformers import pipeline  # type: ignore
+
+        model = toxicity_model_id()
+        clf = pipeline(
+            "text-classification",
+            model=model,
+            top_k=None,
+            truncation=True,
+            max_length=512,
+        )
+        logger.info("Toxicity classifier carregado: %s", model)
+        return clf
+    except Exception as exc:  # noqa: BLE001
+        logger.info(
+            "transformers indisponível — toxicidade verificada só por regex: %s", exc
+        )
+        return None
+
+
+def scan_toxicity(text: str) -> ToxicityResult:
+    """
+    Verifica se ``text`` contém linguagem tóxica/ofensiva.
+
+    Camada 1 (sempre ativa): regex de termos ofensivos inequívocos PT-BR + EN.
+    Camada 2 (opt-in): modelo ``unitary/toxic-bert`` via ``transformers``.
+
+    Retorna ``ToxicityResult(toxic=True, score, layer)`` se toxicidade detectada.
+    O chamador decide a ação: bloquear (entrada) ou apenas registrar (saída).
+
+    Quando ``SECURITY_TOXICITY_ENABLED=0``, devolve ``toxic=False`` sem inspeção.
+    """
+    raw = text or ""
+    if not toxicity_enabled() or not raw.strip():
+        return ToxicityResult(toxic=False)
+
+    # Camada 1: regex — rápido, sem dependências.
+    if _TOXICITY_TERMS.search(raw):
+        return ToxicityResult(toxic=True, score=1.0, layer="regex")
+
+    # Camada 2: modelo transformer — só se disponível.
+    clf = _toxicity_classifier()
+    if clf is None:
+        return ToxicityResult(toxic=False)
+
+    try:
+        # top_k=None devolve lista de dicts [{"label": ..., "score": ...}].
+        results = clf(raw[:512])
+        # O pipeline com top_k=None devolve lista-de-listas quando processa um
+        # único texto; normalizamos para lista plana de dicts.
+        if results and isinstance(results[0], list):
+            results = results[0]
+        threshold = toxicity_threshold()
+        for item in results:
+            label: str = item.get("label", "").upper()
+            score: float = float(item.get("score", 0.0))
+            if label == "TOXIC" and score >= threshold:
+                return ToxicityResult(toxic=True, score=score, layer="model")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Toxicity classifier falhou: %s", exc)
+
+    return ToxicityResult(toxic=False)

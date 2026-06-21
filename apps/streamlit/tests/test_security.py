@@ -33,6 +33,7 @@ sanitize_model_output = _security.sanitize_model_output
 scan_user_input = _security.scan_user_input
 scan_secrets = _security.scan_secrets
 scan_code_input = _security.scan_code_input
+scan_toxicity = _security.scan_toxicity
 _is_source_line = _security._is_source_line
 
 
@@ -42,6 +43,68 @@ def _detect_secrets_available() -> bool:
     except Exception:
         return False
     return True
+
+
+class ToxicityTests(unittest.TestCase):
+    """Scanner de toxicidade — camada regex (sempre ativa, sem transformers)."""
+
+    def test_blocks_explicit_offensive_pt(self) -> None:
+        res = scan_toxicity("vai se foder seu fdp")
+        self.assertTrue(res.toxic)
+        self.assertEqual(res.layer, "regex")
+        self.assertAlmostEqual(res.score, 1.0)
+
+    def test_blocks_explicit_offensive_en(self) -> None:
+        res = scan_toxicity("fuck you, you stupid idiot")
+        self.assertTrue(res.toxic)
+        self.assertEqual(res.layer, "regex")
+
+    def test_blocks_self_harm_term(self) -> None:
+        res = scan_toxicity("se mata seu inútil")
+        self.assertTrue(res.toxic)
+        self.assertEqual(res.layer, "regex")
+
+    def test_allows_normal_lab_question(self) -> None:
+        res = scan_toxicity("Qual o lote do anticorpo primário no projeto 252?")
+        self.assertFalse(res.toxic)
+
+    def test_allows_technical_terminology(self) -> None:
+        # Termos técnicos que poderiam colidir com palavrões fora de contexto
+        # (ex.: "ELISA", "carga viral", "inibição") não devem ser bloqueados.
+        for phrase in [
+            "Liste a concentração de cada reagente ELISA do protocolo.",
+            "Qual a função do tampão de bloqueio no ensaio de Chikungunya?",
+            "Compare a inibição entre os projetos 252 e 253.",
+            "O anticorpo anti-DENV apresentou reatividade cruzada com anti-CHIKV.",
+        ]:
+            res = scan_toxicity(phrase)
+            self.assertFalse(res.toxic, f"falso positivo em: {phrase!r}")
+
+    def test_disabled_returns_not_toxic(self) -> None:
+        os.environ["SECURITY_TOXICITY_ENABLED"] = "0"
+        try:
+            res = scan_toxicity("vai se foder")
+            self.assertFalse(res.toxic)
+        finally:
+            os.environ.pop("SECURITY_TOXICITY_ENABLED", None)
+
+    def test_scan_user_input_blocks_toxic_message(self) -> None:
+        res = scan_user_input("cala a boca seu filho da puta")
+        self.assertFalse(res.allowed)
+        self.assertTrue(any("toxicity" in t for t in res.triggered))
+
+    def test_sanitize_output_marks_but_does_not_block(self) -> None:
+        # Toxicidade na saída: deve registrar em neutralized mas preservar o texto.
+        offensive_output = "Resultado do ensaio: fuck you this analysis is garbage"
+        res = sanitize_model_output(offensive_output)
+        # Texto não é apagado — só marcado.
+        self.assertIn("fuck you", res.text)
+        self.assertTrue(any("toxicity" in n for n in res.neutralized))
+
+    def test_clean_output_not_marked(self) -> None:
+        clean = "O anticorpo primário foi diluído 1:1000 em PBS-T. Validade: 2026-08."
+        res = sanitize_model_output(clean)
+        self.assertFalse(any("toxicity" in n for n in res.neutralized))
 
 
 class BanCodeTests(unittest.TestCase):

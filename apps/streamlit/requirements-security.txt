@@ -39,3 +39,18 @@ spacy>=3.7.0,<4.0.0
 # erroneamente classificados como "Base64 High Entropy String"), o que
 # bloquearia toda mensagem normal do laboratório.
 detect-secrets>=1.4.0,<2.0.0
+
+# ── Toxicidade (opt-in — sem dependência obrigatória) ────────────────────────
+# A detecção de toxicidade opera em duas camadas:
+#   1. Regex de termos ofensivos PT-BR + EN (sempre ativa, sem dependências).
+#   2. Modelo ``unitary/toxic-bert`` via ``transformers`` (ativado automaticamente
+#      quando ``transformers`` está instalado; degrada graciosamente caso contrário).
+#
+# Descomente para ativar a camada de modelo (adiciona ~1 GB à imagem):
+#   transformers>=4.40.0,<5.0.0
+#   torch>=2.2.0       # CPU-only; índice de GPU: https://pytorch.org/get-started/
+#
+# Configuração via ambiente:
+#   SECURITY_TOXICITY_ENABLED=1           (padrão: ligado)
+#   SECURITY_TOXICITY_MODEL=unitary/toxic-bert
+#   SECURITY_TOXICITY_THRESHOLD=0.7       (score mínimo 0.0–1.0)
