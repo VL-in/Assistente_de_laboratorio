@@ -1669,6 +1669,30 @@ def _tab_diagnostico(root: Path, root_ok: bool, root_msg: str) -> None:
         "`/data/ml`, `/data/sqlite`."
     )
 
+    with st.expander("Conteúdo de /data (bucket / volume)", expanded=True):
+        data_root = Path("/data")
+        if not data_root.exists():
+            st.error("`/data` não existe — bucket não está montado no contêiner.")
+        else:
+            lines: list[str] = []
+            try:
+                for entry in sorted(data_root.iterdir(), key=lambda p: p.name.lower()):
+                    kind = "d" if entry.is_dir() else "f"
+                    lines.append(f"[{kind}] /data/{entry.name}")
+                    if entry.is_dir():
+                        try:
+                            sub = sorted(entry.iterdir(), key=lambda p: p.name.lower())
+                            for s in sub[:20]:
+                                sk = "d" if s.is_dir() else "f"
+                                lines.append(f"    [{sk}] {s.name}")
+                            if len(sub) > 20:
+                                lines.append(f"    … e mais {len(sub) - 20} entradas")
+                        except PermissionError:
+                            lines.append("    (sem permissão de leitura)")
+            except PermissionError:
+                lines.append("(sem permissão para listar /data)")
+            st.code("\n".join(lines) if lines else "(vazio)", language="text")
+
     st.subheader("ML tradicional (FLAML)")
     flaml_ok, flaml_detail = flaml_available()
     st.write(f"- Modelos `.pkl`: `{ml_models_root()}`")
