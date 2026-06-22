@@ -1693,6 +1693,21 @@ def _tab_diagnostico(root: Path, root_ok: bool, root_msg: str) -> None:
                 lines.append("(sem permissão para listar /data)")
             st.code("\n".join(lines) if lines else "(vazio)", language="text")
 
+    st.subheader("Diagnóstico ML")
+    ml_path = chat_ml_model_path()
+    st.write(f"- Caminho esperado: `{ml_path}`")
+    st.write(f"- Arquivo existe: **{'sim' if ml_path.is_file() else 'não'}**")
+    st.write(f"- `ASSISTENTE_ML_DIR`: `{os.environ.get('ASSISTENTE_ML_DIR', '(não definido)')}`")
+    st.write(f"- `ASSISTENTE_ML_CHAT_MODEL`: `{os.environ.get('ASSISTENTE_ML_CHAT_MODEL', '(não definido)')}`")
+    ml_root = ml_path.parent
+    st.write(f"- Pasta `{ml_root}` existe: **{'sim' if ml_root.is_dir() else 'não'}**")
+    if ml_root.is_dir():
+        contents = list(ml_root.iterdir())
+        if contents:
+            st.code("\n".join(p.name for p in sorted(contents)), language="text")
+        else:
+            st.caption("(pasta vazia)")
+
     st.subheader("ML tradicional (FLAML)")
     flaml_ok, flaml_detail = flaml_available()
     st.write(f"- Modelos `.pkl`: `{ml_models_root()}`")
