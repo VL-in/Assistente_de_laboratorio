@@ -1,3 +1,13 @@
+---
+title: Assistente de Laboratorio
+emoji: 🧪
+colorFrom: blue
+colorTo: green
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 # Assistente de Laboratório
 
 ![Python](https://img.shields.io/badge/python-3.12-blue) ![License](https://img.shields.io/badge/License-MIT-white)
