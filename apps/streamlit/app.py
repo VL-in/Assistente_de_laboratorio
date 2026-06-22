@@ -1816,6 +1816,12 @@ tabs = st.tabs(["Conversa", "Documentos", "ML tradicional", "Desenvolvimento"])
 
 scans: list[ProjectScan] | None = st.session_state.get("last_scan")
 
+# Auto-scan na primeira visita: se o bucket/volume já tem arquivos mas o
+# usuário ainda não escaneou nesta sessão, dispara automaticamente.
+if scans is None and root_ok:
+    _run_project_scan()
+    scans = st.session_state.get("last_scan")
+
 with tabs[0]:
     _tab_chat()
 with tabs[1]:
