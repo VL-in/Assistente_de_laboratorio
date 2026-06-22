@@ -1,13 +1,3 @@
----
-title: Assistente de Laboratório
-emoji: 🧬
-colorFrom: blue
-colorTo: green
-sdk: docker
-app_port: 7860
-pinned: false
----
-
 # Assistente de Laboratório
 
 ![Python](https://img.shields.io/badge/python-3.12-blue) ![License](https://img.shields.io/badge/License-MIT-white)
@@ -18,58 +8,75 @@ Assistente de laboratório para P&D que responde perguntas sobre experimentos pa
 
 - Escaneamento de documentos (`.docx`, `.xlsx`, `.xlsm`, `.pdf`, `.txt`, `.md`, `.csv`) locais ou de volumes persistentes.
 - Consulta agêntica de documentações internas (protocolos, insumos, resultados de ensaios) via RAG híbrido (BM25 + semântica E5).
-- Análise de planilhas via NL→SQL (DuckDB), sem escrever SQL manualmente.
-- Predição de afinidade anticorpo–antígeno por regressão AutoML (FLAML + ESM-2).
+- Análise de planilhas via lingua natural → SQL (DuckDB), sem escrever SQL manualmente.
+- Predição de afinidade anticorpo–antígeno por regressão, fornecendo sequencias de fasta do heavy chain, light chain e do antígeno.
 - Respostas sintetizadas com referência ao arquivo e projeto de origem.
 - Camada de segurança: redação de PII (Presidio), detecção de prompt injection, sanitização de saída.
 
 ## Pré-requisitos
 
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/) (Windows/macOS) ou Docker Engine + Compose v2 (Linux)
-- Conta no [OpenRouter](https://openrouter.ai/) com **chave de API** ativa (começa com `sk-or-v1-...`)
+- Conta no [OpenRouter](https://openrouter.ai/) com **chave de API** ativa
 - Uma pasta de projetos no host com **um subdiretório por projeto** e documentos nos formatos listados acima
 
-> **Por que OpenRouter?** Ele expõe centenas de modelos (incluindo os gratuitos) por uma única API compatível com OpenAI. Os modelos com sufixo `:free` são gratuitos com limites de requisição.
 
 ## Instalação
 
-### 1. Clonar e configurar o ambiente
+### 1. Clonar o repositório
 
-Na raiz do repositório, copie o arquivo de exemplo e edite com suas credenciais:
+```bash
+git clone https://github.com/VL-in/Assistente_de_laboratorio.git
+cd Assistente_de_laboratorio
+```
+
+### 2. Criar a pasta de projetos
+
+Crie (ou aponte para) a pasta no host que contém os documentos do laboratório. Cada projeto deve ser um subdiretório separado:
+
+```
+MinhaPastaLab/
+├── Projeto_A/
+│   ├── protocolo.docx
+│   └── resultados.xlsx
+└── Projeto_B/
+    └── relatorio.pdf
+```
+
+### 3. Configurar variáveis de ambiente
+
+Copie o arquivo de exemplo e preencha com suas credenciais:
 
 ```bash
 cp .env.example .env
 ```
 
-Preencha no `.env` pelo menos:
+Edite o `.env` e preencha pelo menos as três variáveis obrigatórias:
 
 | Variável | O que preencher |
 |----------|-----------------|
-| `PROJETOS_HOST_DIR` | Caminho absoluto da pasta de projetos no host (ex.: `D:/Lab/Projetos`) |
 | `OPENROUTER_API_KEY` | Sua chave em [openrouter.ai/settings/keys](https://openrouter.ai/settings/keys) |
-| `LLM_MODEL` | Slug do modelo (padrão `openrouter/auto`) — veja [Escolha do modelo](#escolha-do-modelo) |
+| `PROJETOS_HOST_DIR` | Caminho **absoluto** da pasta de projetos no host (ex.: `D:/Lab/Projetos`) |
+| `LLM_MODEL` | Slug do modelo (padrão `openrouter/auto`)
 
-> Nunca faça commit do `.env` — ele contém segredos.
+> **Windows:** use barras normais no caminho, ex.: `C:/Users/Seu_Nome/Lab/Projetos`.
 
-### 2. Subir a aplicação
+### 4. Subir a aplicação
 
 ```bash
 docker compose up --build
 ```
 
-Para rodar em segundo plano:
+O primeiro `build` baixa a imagem de embeddings (~1 GB) e pode levar alguns minutos. Aguarde a mensagem `Healthy` do serviço `embeddings` antes de usar.
+
+Para rodar em segundo plano após o primeiro build:
 
 ```bash
-docker compose up -d --build
+docker compose up -d
 ```
 
-Acesse no navegador: **http://127.0.0.1:8502**
+Acesse no navegador: **http://localhost:8502**
 
-Após alterar o `.env`, recrie o contêiner para aplicar as mudanças:
-
-```bash
-docker compose up -d --build
-```
+> Após editar o `.env`, aplique as mudanças com `docker compose up -d --build`.
 
 ## Uso
 
@@ -82,31 +89,7 @@ docker compose up -d --build
 5. **Conversa** — envie uma pergunta; o sistema roteia automaticamente para documentos, planilhas ou ML conforme disponível.
 6. **ML tradicional** — carregue o dataset **AbRank (Kaggle)**, treine o modelo FLAML (`log_Aff`), salve o `.pkl` e teste a predição via chat.
 
-### Escolha do modelo
 
-`LLM_MODEL` aceita qualquer slug de [openrouter.ai/models](https://openrouter.ai/models):
-
-| Slug | Quando usar | Custo |
-|------|-------------|-------|
-| `openrouter/auto` | Padrão — o roteador escolhe o melhor para cada requisição | Mesmo do modelo selecionado |
-| `openrouter/free` | Sorteia entre modelos gratuitos disponíveis | Grátis (limites por minuto/dia) |
-| `meta-llama/llama-3.3-70b-instruct:free` | Modelo grande e multilíngue, bom para PT-BR | Grátis |
-| `qwen/qwen3.5-7b-instruct:free` | Os perfis de sampling Qwen são ativados automaticamente | Grátis |
-| `anthropic/claude-3.5-sonnet` | Alta qualidade para síntese complexa | Pago |
-
-### Convenção de projetos
-
-Cada **subdiretório imediato** da pasta raiz configurada (ex.: `Projetos/`) é um projeto. Subpastas internas como `planning/` ou `results/` pertencem ao mesmo projeto.
-
-```
-Projetos/
-├── projeto-dengue/        ← project_id = "projeto-dengue"
-│   ├── protocolo.docx
-│   └── resultados/
-│       └── ensaio_01.xlsx
-└── projeto-chikungunya/   ← project_id = "projeto-chikungunya"
-    └── ...
-```
 
 ## Arquitetura
 
@@ -126,7 +109,7 @@ projects_loader → extração/chunking → txtai (RAG híbrido BM25 + E5)
                    Streamlit UI
 ```
 
-O LLM é **sempre remoto** (OpenRouter). Os documentos e índices ficam **locais ou em volumes persistentes** — nada de dado sensível vai para a nuvem.
+
 
 ## Problemas comuns
 
