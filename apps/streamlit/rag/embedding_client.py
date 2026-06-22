@@ -1,82 +1,72 @@
 """
-Cliente HTTP para o serviço de embeddings (TEI) no contêiner Docker.
+Geração de embeddings RAG via sentence-transformers in-process.
+
+Substitui o cliente HTTP do TEI (contêiner Docker separado) por uma instância
+local do ``SentenceTransformer``, tornando a aplicação auto-contida e compatível
+com deploys sem Docker Compose (ex.: Hugging Face Spaces).
 
 O modelo ``intfloat/multilingual-e5-small`` exige prefixos assimétricos:
 ``passage:`` na indexação e ``query:`` nas buscas. O txtai aplica esses
 prefixos via ``instructions`` em ``embeddings_config()`` antes de chamar
-``transform``.
+``embedding_transform``.
 """
 
 from __future__ import annotations
 
 import os
+import threading
+
 import numpy as np
-import requests
 
 EMBEDDING_MODEL_ID = "intfloat/multilingual-e5-small"
 # Caminho importável gravado no índice txtai (``Resolver`` do txtai na carga).
 EMBEDDING_TRANSFORM_PATH = "rag.embedding_client.embedding_transform"
-ENV_EMBEDDING_SERVICE_URL = "EMBEDDING_SERVICE_URL"
-ENV_EMBEDDING_HTTP_BATCH_SIZE = "EMBEDDING_HTTP_BATCH_SIZE"
-DEFAULT_EMBEDDING_SERVICE_URL = "http://embeddings:80"
-# TEI rejeita lotes grandes (413) — sub-lotes HTTP independentes do batch do txtai.
-DEFAULT_EMBEDDING_HTTP_BATCH_SIZE = 16
-_EMBED_TIMEOUT_S = float(os.environ.get("EMBEDDING_TIMEOUT_S", "120"))
+
+_DEFAULT_BATCH_SIZE = 32
+
+_model_lock = threading.Lock()
+_model_instance: object | None = None
 
 
-def embedding_http_batch_size() -> int:
-    """Quantos textos enviar por POST ``/embed`` (limite do TEI)."""
-    raw = os.environ.get(
-        ENV_EMBEDDING_HTTP_BATCH_SIZE,
-        str(DEFAULT_EMBEDDING_HTTP_BATCH_SIZE),
-    ).strip()
-    try:
-        return max(1, int(raw))
-    except ValueError:
-        return DEFAULT_EMBEDDING_HTTP_BATCH_SIZE
+def _get_model() -> object:
+    """
+    Retorna a instância singleton do SentenceTransformer, carregando na primeira chamada.
 
+    Thread-safe via Lock: se duas threads chegarem simultaneamente na primeira
+    chamada, apenas uma carrega o modelo; a outra aguarda e reutiliza a instância.
+    O cache em ``HF_HOME`` / ``SENTENCE_TRANSFORMERS_HOME`` evita re-download.
+    """
+    global _model_instance
+    if _model_instance is not None:
+        return _model_instance
+    with _model_lock:
+        if _model_instance is None:
+            from sentence_transformers import SentenceTransformer
 
-def embedding_service_url() -> str:
-    """URL base do TEI (sem barra final)."""
-    raw = os.environ.get(ENV_EMBEDDING_SERVICE_URL, DEFAULT_EMBEDDING_SERVICE_URL).strip()
-    return raw.rstrip("/")
+            cache_dir = os.environ.get("SENTENCE_TRANSFORMERS_HOME") or os.environ.get("HF_HOME")
+            _model_instance = SentenceTransformer(EMBEDDING_MODEL_ID, cache_folder=cache_dir)
+    return _model_instance
 
 
 def embed_texts(texts: list[str]) -> np.ndarray:
     """
-    Gera embeddings via POST ``/embed`` do Text Embeddings Inference.
+    Gera embeddings para uma lista de textos via SentenceTransformer in-process.
 
-    O txtai pode pedir dezenas de textos de uma vez (ex.: lote 64 na UI).
-    O TEI limita inputs por requisição (``max-client-batch-size``) e o corpo
-    HTTP (``payload-limit``), retornando **413** se o lote for grande demais.
-    Por isso fragmentamos em sub-lotes HTTP menores e concatenamos os vetores.
-
-    Retorna matriz ``(n, dim)`` em float32.
+    Retorna matriz ``(n, dim)`` em float32. Lista vazia retorna ``(0, 0)``.
+    O tamanho de lote é controlado por ``EMBEDDING_BATCH_SIZE`` (padrão 32).
     """
     if not texts:
         return np.zeros((0, 0), dtype=np.float32)
 
-    url = f"{embedding_service_url()}/embed"
-    http_batch = embedding_http_batch_size()
-    all_vectors: list[list[float]] = []
-
-    for start in range(0, len(texts), http_batch):
-        chunk = texts[start : start + http_batch]
-        response = requests.post(
-            url,
-            json={"inputs": chunk},
-            timeout=_EMBED_TIMEOUT_S,
-        )
-        response.raise_for_status()
-        batch_vectors = response.json()
-        if not isinstance(batch_vectors, list) or len(batch_vectors) != len(chunk):
-            raise RuntimeError(
-                f"TEI devolveu {len(batch_vectors) if isinstance(batch_vectors, list) else type(batch_vectors)!r} "
-                f"vetores para {len(chunk)} entradas."
-            )
-        all_vectors.extend(batch_vectors)
-
-    return np.array(all_vectors, dtype=np.float32)
+    model = _get_model()
+    batch_size = _batch_size()
+    vectors = model.encode(  # type: ignore[attr-defined]
+        texts,
+        batch_size=batch_size,
+        show_progress_bar=False,
+        convert_to_numpy=True,
+    )
+    return np.array(vectors, dtype=np.float32)
 
 
 def embedding_transform(inputs: list[str] | str) -> np.ndarray:
@@ -88,3 +78,11 @@ def embedding_transform(inputs: list[str] | str) -> np.ndarray:
     """
     batch = [inputs] if isinstance(inputs, str) else list(inputs)
     return embed_texts(batch)
+
+
+def _batch_size() -> int:
+    raw = os.environ.get("EMBEDDING_BATCH_SIZE", str(_DEFAULT_BATCH_SIZE)).strip()
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return _DEFAULT_BATCH_SIZE

@@ -197,7 +197,7 @@ def _txtai_backend_cached(mtime_key: float):
 
     O ``st.cache_resource`` mantém a instância em memória entre reruns do
     Streamlit, evitando recarregar o índice vetorial a cada interação.
-    Os vetores são calculados pelo contêiner TEI (``EMBEDDING_SERVICE_URL``).
+    Os vetores são calculados pelo sentence-transformers in-process (multilingual-e5-small).
 
     O parâmetro ``mtime_key`` é o timestamp de modificação do manifesto
     (obtido via ``index_mtime()``). Quando o índice é reconstruído, esse valor
