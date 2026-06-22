@@ -47,6 +47,7 @@ from llm_config import (
 )
 from observability import (
     chat_observation_context,
+    langfuse_span,
     langfuse_status,
     update_chat_trace_output,
     update_chat_trace_route,
@@ -600,46 +601,49 @@ def _run_chat_via_crew(
                         "PII anonimizada antes do envio externo: "
                         + ", ".join(f"{k}×{v}" for k, v in sorted(pii_sent.items()))
                     )
-                if use_stream:
-                    stream = create_chat_completion(
-                        client,
-                        messages=external_messages,
-                        model=model,
-                        profile=chat_profile,
-                        max_tokens=int(reply_max_tokens),
-                        stream=True,
-                        generation_name="crew-synthesizer",
-                    )
-
-                    placeholder = st.empty()
-                    chunks: list[str] = []
-                    for piece in iter_stream_answer_text(stream, model_id=model):
-                        chunks.append(piece)
-                        # Render incremental seguro: sanitiza o acumulado a cada
-                        # token para nunca exibir markdown de exfiltração cru.
-                        partial = sanitize_model_output(
-                            strip_thinking_blocks("".join(chunks))
-                        ).text
-                        placeholder.markdown(partial + "▌")
-                    full_text = strip_thinking_blocks("".join(chunks))
-                    out_guard = sanitize_model_output(full_text)
-                    answer = out_guard.text
-                    placeholder.markdown(answer)
-                else:
-                    with st.spinner("Gerando resposta…"):
-                        completion = create_chat_completion(
+                with langfuse_span(
+                    "Synthesizer",
+                    as_type="span",
+                    input_data={"model": model, "n_messages": len(external_messages)},
+                ):
+                    if use_stream:
+                        stream = create_chat_completion(
                             client,
                             messages=external_messages,
                             model=model,
                             profile=chat_profile,
                             max_tokens=int(reply_max_tokens),
-                            stream=False,
-                            generation_name="crew-synthesizer",
+                            stream=True,
                         )
-                    raw = (completion.choices[0].message.content or "").strip()
-                    out_guard = sanitize_model_output(strip_thinking_blocks(raw))
-                    answer = out_guard.text
-                    st.markdown(answer)
+
+                        placeholder = st.empty()
+                        chunks: list[str] = []
+                        for piece in iter_stream_answer_text(stream, model_id=model):
+                            chunks.append(piece)
+                            # Render incremental seguro: sanitiza o acumulado a cada
+                            # token para nunca exibir markdown de exfiltração cru.
+                            partial = sanitize_model_output(
+                                strip_thinking_blocks("".join(chunks))
+                            ).text
+                            placeholder.markdown(partial + "▌")
+                        full_text = strip_thinking_blocks("".join(chunks))
+                        out_guard = sanitize_model_output(full_text)
+                        answer = out_guard.text
+                        placeholder.markdown(answer)
+                    else:
+                        with st.spinner("Gerando resposta…"):
+                            completion = create_chat_completion(
+                                client,
+                                messages=external_messages,
+                                model=model,
+                                profile=chat_profile,
+                                max_tokens=int(reply_max_tokens),
+                                stream=False,
+                            )
+                        raw = (completion.choices[0].message.content or "").strip()
+                        out_guard = sanitize_model_output(strip_thinking_blocks(raw))
+                        answer = out_guard.text
+                        st.markdown(answer)
                 if show_dev_details and out_guard.neutralized:
                     st.caption(
                         "Saída sanitizada (vetores neutralizados): "

@@ -10,7 +10,7 @@ requests>=2.31.0
 
 # Observabilidade LLM (traces, sessões, custo por chamada).
 
-langfuse>=3.0.0,<5.0.0
+langfuse>=4.0.0,<5.0.0
 
 txtai>=9.0.0
 

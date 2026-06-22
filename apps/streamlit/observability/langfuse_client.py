@@ -61,14 +61,9 @@ def langfuse_enabled() -> bool:
 
 
 def ensure_openai_tracing() -> None:
-    """Registra o wrapper Langfuse nas chamadas ``openai.*.create`` (idempotente)."""
+    """No-op: o tracing de chamadas LLM é feito via langfuse_span (OTEL) em runner.py."""
     global _openai_tracing_installed
-    if _openai_tracing_installed or not langfuse_enabled():
-        return
-    normalize_langfuse_env()
-    import langfuse.openai  # noqa: F401 — efeito colateral: register_tracing()
-
-    _openai_tracing_installed = True
+    _openai_tracing_installed = False
 
 
 def flush_langfuse() -> None:

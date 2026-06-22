@@ -418,15 +418,6 @@ def build_completion_kwargs(
     return kwargs
 
 
-def _langfuse_generation_names_enabled() -> bool:
-    try:
-        from observability.langfuse_client import langfuse_enabled
-
-        return langfuse_enabled()
-    except ImportError:
-        return False
-
-
 def create_chat_completion(
     client: Any,
     *,
@@ -444,8 +435,8 @@ def create_chat_completion(
     ``chat_template_kwargs.enable_thinking`` — se o provider não aceitar (alguns
     serviços recusam o campo), repetimos a chamada sem ele.
 
-    ``generation_name`` vira o atributo ``name`` da geração no Langfuse
-    (ex.: ``crew-triage``, ``crew-synthesizer``) — facilita filtrar traces.
+    ``generation_name`` é aceito por compatibilidade mas ignorado — o tracing
+    é feito via ``langfuse_span`` (OTEL) nos callers.
     """
     kwargs = build_completion_kwargs(
         model=model,
@@ -453,8 +444,6 @@ def create_chat_completion(
         max_tokens=max_tokens,
         stream=stream,
     )
-    if generation_name and _langfuse_generation_names_enabled():
-        kwargs["name"] = generation_name
 
     max_attempts = llm_retry_max_attempts()
     for attempt in range(1, max_attempts + 1):
