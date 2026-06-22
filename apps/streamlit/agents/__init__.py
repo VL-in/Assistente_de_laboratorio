@@ -15,14 +15,28 @@ from .runner import (
     run_crew_chat,
     trace_handoff_enabled,
 )
+from .security import (
+    InputGuardResult,
+    OutputGuardResult,
+    anonymize_messages_for_external,
+    anonymize_pii,
+    sanitize_model_output,
+    scan_user_input,
+)
 from .tools import ToolResult
 
 __all__ = [
     "CrewRunResult",
     "HandoffStep",
     "HandoffTrace",
+    "InputGuardResult",
+    "OutputGuardResult",
     "ToolResult",
+    "anonymize_messages_for_external",
+    "anonymize_pii",
     "parallel_tools_enabled",
     "run_crew_chat",
+    "sanitize_model_output",
+    "scan_user_input",
     "trace_handoff_enabled",
 ]

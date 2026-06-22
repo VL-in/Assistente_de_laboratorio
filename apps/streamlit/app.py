@@ -53,8 +53,12 @@ from observability import (
 )
 from agents import (
     CrewRunResult,
+    anonymize_messages_for_external,
+    anonymize_pii,
     parallel_tools_enabled,
     run_crew_chat,
+    sanitize_model_output,
+    scan_user_input,
     trace_handoff_enabled,
 )
 from qwen35_inference import (
@@ -585,10 +589,21 @@ def _run_chat_via_crew(
                 st.markdown(msg["content"])
         with st.chat_message("assistant"):
             try:
+                # Borda externa (P1-4): anonimiza PII em TODO o prompt (system +
+                # contexto RAG/OLAP + histórico + pergunta) antes de sair para o
+                # OpenRouter. A resposta ao usuário autenticado permanece íntegra.
+                external_messages, pii_sent = anonymize_messages_for_external(
+                    api_messages
+                )
+                if show_dev_details and pii_sent:
+                    st.caption(
+                        "PII anonimizada antes do envio externo: "
+                        + ", ".join(f"{k}×{v}" for k, v in sorted(pii_sent.items()))
+                    )
                 if use_stream:
                     stream = create_chat_completion(
                         client,
-                        messages=api_messages,
+                        messages=external_messages,
                         model=model,
                         profile=chat_profile,
                         max_tokens=int(reply_max_tokens),
@@ -596,16 +611,25 @@ def _run_chat_via_crew(
                         generation_name="crew-synthesizer",
                     )
 
-                    def _token_stream():
-                        yield from iter_stream_answer_text(stream, model_id=model)
-
-                    full_text = st.write_stream(_token_stream)
-                    answer = strip_thinking_blocks(full_text or "")
+                    placeholder = st.empty()
+                    chunks: list[str] = []
+                    for piece in iter_stream_answer_text(stream, model_id=model):
+                        chunks.append(piece)
+                        # Render incremental seguro: sanitiza o acumulado a cada
+                        # token para nunca exibir markdown de exfiltração cru.
+                        partial = sanitize_model_output(
+                            strip_thinking_blocks("".join(chunks))
+                        ).text
+                        placeholder.markdown(partial + "▌")
+                    full_text = strip_thinking_blocks("".join(chunks))
+                    out_guard = sanitize_model_output(full_text)
+                    answer = out_guard.text
+                    placeholder.markdown(answer)
                 else:
                     with st.spinner("Gerando resposta…"):
                         completion = create_chat_completion(
                             client,
-                            messages=api_messages,
+                            messages=external_messages,
                             model=model,
                             profile=chat_profile,
                             max_tokens=int(reply_max_tokens),
@@ -613,12 +637,20 @@ def _run_chat_via_crew(
                             generation_name="crew-synthesizer",
                         )
                     raw = (completion.choices[0].message.content or "").strip()
-                    answer = strip_thinking_blocks(raw)
+                    out_guard = sanitize_model_output(strip_thinking_blocks(raw))
+                    answer = out_guard.text
                     st.markdown(answer)
+                if show_dev_details and out_guard.neutralized:
+                    st.caption(
+                        "Saída sanitizada (vetores neutralizados): "
+                        + ", ".join(out_guard.neutralized)
+                    )
                 st.session_state.chat_messages.append(
                     {"role": "assistant", "content": answer}
                 )
-                update_chat_trace_output(answer)
+                # Trace de auditoria (Langfuse): também é borda externa — envia a
+                # resposta já sanitizada e anonimizada.
+                update_chat_trace_output(anonymize_pii(answer).text)
             except Exception as exc:
                 st.error(f"Não foi possível obter resposta do assistente: {exc}")
                 if (
@@ -1442,6 +1474,24 @@ def _tab_chat() -> None:
                     st.markdown(msg["content"])
 
     if prompt:
+        # Guardrail de entrada (P1-1): bloqueia prompt-injection/extração de
+        # prompt e mensagens gigantes ANTES de chamar qualquer LLM (zero tokens).
+        guard = scan_user_input(prompt)
+        if not guard.allowed:
+            st.session_state.chat_messages.append({"role": "user", "content": prompt})
+            st.session_state.chat_messages.append(
+                {
+                    "role": "assistant",
+                    "content": guard.reason
+                    or "Mensagem bloqueada pela camada de segurança.",
+                }
+            )
+            with chat_box:
+                for msg in st.session_state.chat_messages:
+                    with st.chat_message(msg["role"]):
+                        st.markdown(msg["content"])
+            return
+
         st.session_state.chat_messages.append({"role": "user", "content": prompt})
         show_dev_details = bool(st.session_state.get("dev_chat_override"))
 
