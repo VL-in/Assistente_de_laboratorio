@@ -1,16 +1,8 @@
----
-title: Assistente de Laboratorio
-emoji: 🧪
-colorFrom: blue
-colorTo: green
-sdk: docker
-app_port: 7860
-pinned: false
----
 
 # Assistente de Laboratório
 
-![Python](https://img.shields.io/badge/python-3.12-blue) ![License](https://img.shields.io/badge/License-MIT-white)
+![Python](https://img.shields.io/badge/python-3.12-blue) ![License](https://img.shields.io/badge/License-MIT-white) ![GitHub stars](https://img.shields.io/github/stars/VL-in/Assistente_de_laboratorio)
+TEMPLATE
 
 Assistente de laboratório para P&D que responde perguntas sobre experimentos passados consultando documentos internos, analisa planilhas de ensaios e prediz afinidade de pares anticorpo–antígeno. Toda a infraestrutura roda localmente via Docker — apenas as chamadas de linguagem saem para a API do OpenRouter.
 
